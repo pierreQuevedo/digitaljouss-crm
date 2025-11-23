@@ -60,5 +60,5 @@ export async function GET(request: NextRequest) {
   }
 
   // Ici, l'utilisateur est autorisé et la session est bien en cookie
-  return NextResponse.redirect(`${origin}/`);
+  return NextResponse.redirect(`${origin}/dashboard`);
 }
