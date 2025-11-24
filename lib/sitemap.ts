@@ -32,9 +32,8 @@ export const sitemap: { main: NavItem[]; secondary: NavItem[] } = {
       icon: Users,
       children: [
         { label: "Tous les clients", href: "/dashboard/clients" },
-        // Tu pourras brancher ça plus tard si tu veux faire des vues par segment
-        { label: "Segments", href: "/dashboard/clients/segments" },
-        { label: "KPI", href: "/dashboard/clients/kpi" },
+        { label: "Prospects", href: "/dashboard/clients/prospects" },
+        { label: "Ajouter un client", href: "/dashboard/clients?add=1" },
       ],
     },
     {

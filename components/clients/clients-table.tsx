@@ -1,27 +1,21 @@
-// components/clients/clients-table.tsx
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type ColumnDef,
   type ColumnFiltersState,
-  type FilterFn,
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
   getPaginationRowModel,
   getSortedRowModel,
-  type Row,
   type SortingState,
   useReactTable,
+  type VisibilityState,
+  type Row,
 } from "@tanstack/react-table";
+
 import {
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -29,9 +23,8 @@ import {
   ChevronUpIcon,
   ChevronFirstIcon,
   ChevronLastIcon,
-  ListFilterIcon,
-  Columns3Icon,
   EllipsisVerticalIcon,
+  Columns3Icon,
 } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
@@ -42,7 +35,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -57,8 +49,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -67,287 +57,76 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+// import { Label } from "@/components/ui/label";
+// import { Textarea } from "@/components/ui/textarea";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { ClientFormDialog } from "@/components/clients/client-form-dialog";
 
-import {
-  Combobox,
-  ComboboxChip,
-  ComboboxChips,
-  ComboboxEmpty,
-  ComboboxInput,
-  ComboboxItem,
-  ComboboxList,
-  ComboboxPopup,
-  ComboboxValue,
-} from "@/components/ui/combobox";
-import {
-  Field,
-  FieldDescription,
-  FieldLabel,
-} from "@/components/ui/field";
-
-// ---------- Types services actifs ----------
-
-type ServiceFamilyKey =
-  | "strategie_digitale"
-  | "direction_artistique"
-  | "conception_web"
-  | "social_media_management";
-
-type ServicesActifs = Partial<Record<ServiceFamilyKey, Record<string, boolean>>>;
-
-type ServiceItem = {
-  label: string;
-  value: string; // ex: "strategie_digitale.audit"
-};
-
-// définition des services possibles
-const SERVICE_ITEMS: ServiceItem[] = [
-  // Stratégie digitale
-  { label: "Stratégie • Audit", value: "strategie_digitale.audit" },
-  { label: "Stratégie • Process", value: "strategie_digitale.process" },
-  { label: "Stratégie • SEO", value: "strategie_digitale.seo" },
-  { label: "Stratégie • SEA", value: "strategie_digitale.sea" },
-  { label: "Stratégie • SMO", value: "strategie_digitale.smo" },
-  { label: "Stratégie • SMA", value: "strategie_digitale.sma" },
-
-  // Direction artistique
-  {
-    label: "DA • Identité visuelle",
-    value: "direction_artistique.identite_visuelle",
-  },
-  { label: "DA • Print", value: "direction_artistique.print" },
-  { label: "DA • UI / UX design", value: "direction_artistique.ui_ux_design" },
-  { label: "DA • Motion design", value: "direction_artistique.motion_design" },
-
-  // Conception web
-  { label: "Web • Landing page", value: "conception_web.landing_page" },
-  { label: "Web • Site vitrine", value: "conception_web.site_vitrine" },
-  { label: "Web • E-commerce", value: "conception_web.ecommerce" },
-  { label: "Web • Application", value: "conception_web.application" },
-  { label: "Web • Plateforme", value: "conception_web.plateforme" },
-  { label: "Web • Appel d’offres", value: "conception_web.appel_offres" },
-
-  // Social media management
-  {
-    label: "Social • Réseaux sociaux",
-    value: "social_media_management.reseaux_sociaux",
-  },
-  { label: "Social • Réels", value: "social_media_management.reels" },
-  { label: "Social • Vidéos", value: "social_media_management.videos" },
-  { label: "Social • Photos", value: "social_media_management.photos" },
-];
-
-const SERVICE_ITEM_MAP = new Map<string, ServiceItem>(
-  SERVICE_ITEMS.map((item) => [item.value, item]),
-);
-
-// ---------- Type de ligne ----------
+type StatutClient = "client" | "prospect";
 
 type ClientRow = {
   id: string;
+  statut_client: StatutClient;
   nom_affichage: string;
-  nom_legal: string;
+  nom_legal: string | null;
+  logo_url: string | null;
   email_general: string | null;
   site_web_principal: string | null;
-  statut_client:
-    | "prospect"
-    | "propo_envoyee"
-    | "client_actif"
-    | "client_inactif"
-    | "perdu"
-    | "propo_refusee";
-  origine_lead:
-    | "inbound"
-    | "recommandation"
-    | "appel_offres"
-    | "linkedin"
-    | null;
-  ca_total_ht: number | null;
+  contact_principal_nom: string | null;
+  contact_principal_prenom: string | null;
+  contact_principal_email: string | null;
+  notes_internes: string | null;
   created_at: string;
-  services_actifs: ServicesActifs | null;
 };
 
-const statutLabel: Record<ClientRow["statut_client"], string> = {
-  prospect: "Prospect",
-  propo_envoyee: "Propo envoyée",
-  client_actif: "Client actif",
-  client_inactif: "Client inactif",
-  perdu: "Perdu",
-  propo_refusee: "Propo refusée",
-};
-
-function statutColor(statut: ClientRow["statut_client"]) {
-  switch (statut) {
-    case "client_actif":
-      return "bg-emerald-50 text-emerald-700 border-emerald-200";
-    case "propo_envoyee":
-    case "propo_refusee":
-      return "bg-amber-50 text-amber-700 border-amber-200";
-    case "perdu":
-      return "bg-red-50 text-red-700 border-red-200";
-    case "client_inactif":
-      return "bg-slate-50 text-slate-700 border-slate-200";
-    case "prospect":
-    default:
-      return "bg-blue-50 text-blue-700 border-blue-200";
-  }
+// helper pour les initiales
+function getInitials(name: string | null | undefined) {
+  if (!name) return "??";
+  const parts = name.trim().split(/\s+/);
+  const first = parts[0]?.[0];
+  const second = parts[1]?.[0];
+  return `${first ?? ""}${second ?? ""}`.toUpperCase() || "??";
 }
 
-const origineLabel: Record<NonNullable<ClientRow["origine_lead"]>, string> = {
-  inbound: "Inbound",
-  recommandation: "Recommandation",
-  appel_offres: "Appel d’offres",
-  linkedin: "LinkedIn",
-};
-
-// ---------- Services actifs : familles & helpers ----------
-
-const SERVICE_FAMILIES: {
-  key: ServiceFamilyKey;
-  label: string;
-  className: string;
-}[] = [
-  {
-    key: "strategie_digitale",
-    label: "Stratégie",
-    className: "bg-sky-50 text-sky-700 border-sky-200",
-  },
-  {
-    key: "direction_artistique",
-    label: "DA",
-    className: "bg-violet-50 text-violet-700 border-violet-200",
-  },
-  {
-    key: "conception_web",
-    label: "Web",
-    className: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  },
-  {
-    key: "social_media_management",
-    label: "Social",
-    className: "bg-amber-50 text-amber-700 border-amber-200",
-  },
-];
-
-function getActiveServiceFamilies(
-  services: ServicesActifs | null | undefined,
-) {
-  if (!services) return [] as ServiceFamilyKey[];
-
-  const active: ServiceFamilyKey[] = [];
-
-  for (const family of SERVICE_FAMILIES) {
-    const group = services[family.key];
-    if (!group) continue;
-
-    const hasTrue = Object.values(group).some(Boolean);
-    if (hasTrue) active.push(family.key);
-  }
-
-  return active;
-}
-
-// convertir JSON -> items sélectionnés
-function servicesActifsToItems(
-  services: ServicesActifs | null | undefined,
-): ServiceItem[] {
-  if (!services) return [];
-  const result: ServiceItem[] = [];
-
-  for (const family of Object.keys(services) as ServiceFamilyKey[]) {
-    const group = services[family];
-    if (!group) continue;
-
-    for (const [key, value] of Object.entries(group)) {
-      if (!value) continue;
-      const val = `${family}.${key}`;
-      const mapped = SERVICE_ITEM_MAP.get(val);
-      if (mapped) {
-        result.push(mapped);
-      }
-    }
-  }
-
-  return result;
-}
-
-function parseServiceValue(
-  value: string,
-): { family: ServiceFamilyKey; key: string } | null {
-  const [family, key] = value.split(".");
-  if (!family || !key) return null;
-  if (
-    family !== "strategie_digitale" &&
-    family !== "direction_artistique" &&
-    family !== "conception_web" &&
-    family !== "social_media_management"
-  ) {
-    return null;
-  }
-  return { family: family as ServiceFamilyKey, key };
-}
-
-function buildServicesActifsFromItems(items: ServiceItem[]): ServicesActifs {
-  const result: ServicesActifs = {};
-
-  for (const item of items) {
-    const parsed = parseServiceValue(item.value);
-    if (!parsed) continue;
-    if (!result[parsed.family]) {
-      result[parsed.family] = {};
-    }
-    result[parsed.family]![parsed.key] = true;
-  }
-
-  return result;
-}
-
-// ---------- Filtre global nom + email ----------
-
-const multiColumnFilterFn: FilterFn<ClientRow> = (
-  row,
-  _columnId,
-  filterValue,
+// filtre global nom + email
+const multiColumnFilterFn = (
+  row: Row<ClientRow>,
+  _columnId: string,
+  filterValue: unknown,
 ) => {
-  const search = String(filterValue ?? "").toLowerCase();
+  const search = String(filterValue ?? "").toLowerCase().trim();
   if (!search) return true;
 
-  const content = `${row.original.nom_affichage} ${row.original.nom_legal} ${
-    row.original.email_general ?? ""
-  }`
-    .toLowerCase()
-    .trim();
+  const content = [
+    row.original.nom_affichage,
+    row.original.nom_legal ?? "",
+    row.original.email_general ?? "",
+    row.original.contact_principal_email ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
 
   return content.includes(search);
-};
-
-// Filtre par statut
-const statusFilterFn: FilterFn<ClientRow> = (
-  row,
-  columnId,
-  filterValue: string[],
-) => {
-  if (!filterValue?.length) return true;
-  const status = row.getValue(columnId) as string;
-  return filterValue.includes(status);
 };
 
 const pageSizeOptions = [5, 10, 25, 50];
 
 export function ClientsTable({
   className,
+  initialStatut = "client",
   refreshToken,
 }: {
   className?: string;
+  /** "client" ou "prospect" – permet de réutiliser le composant côté Prospects */
+  initialStatut?: StatutClient;
+  /** permet de forcer un refetch depuis le parent */
   refreshToken?: number;
 }) {
   const supabase = createClient();
@@ -358,34 +137,38 @@ export function ClientsTable({
     { id: "nom_affichage", desc: false },
   ]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
-  const [columnVisibility, setColumnVisibility] =
-    useState<Record<string, boolean>>({});
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [pagination, setPagination] = useState({
     pageIndex: 0,
     pageSize: 10,
   });
 
+  const [searchValue, setSearchValue] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const fetchClients = useCallback(async () => {
     setLoading(true);
+
     const { data, error } = await supabase
       .from("clients")
       .select(
         `
         id,
+        statut_client,
         nom_affichage,
         nom_legal,
+        logo_url,
         email_general,
         site_web_principal,
-        statut_client,
-        origine_lead,
-        ca_total_ht,
-        created_at,
-        services_actifs
+        contact_principal_nom,
+        contact_principal_prenom,
+        contact_principal_email,
+        notes_internes,
+        created_at
       `,
       )
-      .order("created_at", { ascending: false });
+      .eq("statut_client", initialStatut)
+      .order("nom_affichage", { ascending: true });
 
     if (error) {
       console.error(error);
@@ -395,39 +178,65 @@ export function ClientsTable({
     } else {
       setData((data ?? []) as ClientRow[]);
     }
+
     setLoading(false);
-  }, [supabase]);
+  }, [supabase, initialStatut]);
 
   useEffect(() => {
     fetchClients();
   }, [fetchClients, refreshToken]);
 
+  async function handleChangeStatut(id: string, value: StatutClient) {
+    const old = data.find((c) => c.id === id);
+    if (!old) return;
+
+    // Optimiste
+    setData((prev) =>
+      prev
+        .map((c) => (c.id === id ? { ...c, statut_client: value } : c))
+        // on enlève la ligne si elle ne correspond plus au filtre courant
+        .filter((c) => c.statut_client === initialStatut),
+    );
+
+    const { error } = await supabase
+      .from("clients")
+      .update({ statut_client: value })
+      .eq("id", id);
+
+    if (error) {
+      console.error(error);
+      toast.error("Erreur lors de la mise à jour du statut", {
+        description: error.message,
+      });
+      // rollback simple : refetch
+      fetchClients();
+      return;
+    }
+
+    toast.success("Statut mis à jour", {
+      description: `${old.nom_affichage} est maintenant ${value}.`,
+    });
+  }
+
   const columns: ColumnDef<ClientRow>[] = [
     {
-      id: "select",
-      header: ({ table }) => {
-        const isAllPageSelected = table.getIsAllPageRowsSelected();
-        const isSomePageSelected = table.getIsSomePageRowsSelected();
+      id: "avatar",
+      header: "",
+      cell: ({ row }) => {
+        const client = row.original;
+        const initials = getInitials(client.nom_affichage);
         return (
-          <Checkbox
-            checked={
-              isAllPageSelected || (isSomePageSelected && "indeterminate")
-            }
-            onCheckedChange={(value) =>
-              table.toggleAllPageRowsSelected(!!value)
-            }
-            aria-label="Sélectionner toutes les lignes"
-          />
+          <Avatar className="h-8 w-8">
+            {client.logo_url && (
+              <AvatarImage src={client.logo_url} alt={client.nom_affichage} />
+            )}
+            <AvatarFallback className="text-xs">
+              {initials}
+            </AvatarFallback>
+          </Avatar>
         );
       },
-      cell: ({ row }) => (
-        <Checkbox
-          checked={row.getIsSelected()}
-          onCheckedChange={(value) => row.toggleSelected(!!value)}
-          aria-label="Sélectionner la ligne"
-        />
-      ),
-      size: 32,
+      size: 40,
       enableSorting: false,
       enableHiding: false,
     },
@@ -435,19 +244,32 @@ export function ClientsTable({
       header: "Client",
       accessorKey: "nom_affichage",
       cell: ({ row }) => {
-        const name = row.original.nom_affichage;
-        const legal = row.original.nom_legal;
+        const client = row.original;
+        const contactName = [
+          client.contact_principal_prenom,
+          client.contact_principal_nom,
+        ]
+          .filter(Boolean)
+          .join(" ");
+
         return (
           <div className="flex flex-col">
-            <span className="font-medium">{name}</span>
-            {legal && legal !== name && (
-              <span className="text-xs text-muted-foreground">{legal}</span>
+            <span className="font-medium">{client.nom_affichage}</span>
+            {client.nom_legal && client.nom_legal !== client.nom_affichage && (
+              <span className="text-xs text-muted-foreground">
+                {client.nom_legal}
+              </span>
+            )}
+            {contactName && (
+              <span className="mt-0.5 text-[11px] text-muted-foreground">
+                {contactName}
+              </span>
             )}
           </div>
         );
       },
-      size: 220,
       filterFn: multiColumnFilterFn,
+      size: 260,
       enableHiding: false,
     },
     {
@@ -455,10 +277,20 @@ export function ClientsTable({
       accessorKey: "email_general",
       cell: ({ row }) => {
         const email = row.original.email_general;
+        if (!email) {
+          return (
+            <span className="text-xs text-muted-foreground">
+              —
+            </span>
+          );
+        }
         return (
-          <span className="text-xs text-muted-foreground">
-            {email || "—"}
-          </span>
+          <a
+            href={`mailto:${email}`}
+            className="text-xs text-blue-600 hover:underline"
+          >
+            {email}
+          </a>
         );
       },
       size: 220,
@@ -468,8 +300,14 @@ export function ClientsTable({
       accessorKey: "site_web_principal",
       cell: ({ row }) => {
         const url = row.original.site_web_principal;
-        if (!url)
-          return <span className="text-xs text-muted-foreground">—</span>;
+        if (!url) {
+          return (
+            <span className="text-xs text-muted-foreground">
+              —
+            </span>
+          );
+        }
+        const display = url.replace(/^https?:\/\//, "");
         return (
           <a
             href={url}
@@ -477,7 +315,7 @@ export function ClientsTable({
             rel="noreferrer"
             className="text-xs text-blue-600 hover:underline"
           >
-            {url.replace(/^https?:\/\//, "")}
+            {display}
           </a>
         );
       },
@@ -487,99 +325,68 @@ export function ClientsTable({
       header: "Statut",
       accessorKey: "statut_client",
       cell: ({ row }) => {
-        const statut = row.original.statut_client;
+        const client = row.original;
         return (
-          <Badge
-            variant="outline"
-            className={cn(
-              "border px-2 py-0.5 text-[11px] font-medium",
-              statutColor(statut),
-            )}
+          <Select
+            value={client.statut_client}
+            onValueChange={(value) =>
+              handleChangeStatut(client.id, value as StatutClient)
+            }
           >
-            {statutLabel[statut]}
-          </Badge>
-        );
-      },
-      size: 130,
-      filterFn: statusFilterFn,
-    },
-    {
-      header: "Origine",
-      accessorKey: "origine_lead",
-      cell: ({ row }) => {
-        const origine = row.original.origine_lead;
-        return (
-          <span className="text-xs text-muted-foreground">
-            {origine ? origineLabel[origine] : "—"}
-          </span>
+            <SelectTrigger className="h-8 w-[120px] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="client">Client</SelectItem>
+              <SelectItem value="prospect">Prospect</SelectItem>
+            </SelectContent>
+          </Select>
         );
       },
       size: 140,
     },
     {
-      header: "Services",
-      accessorKey: "services_actifs",
+      header: "Créé le",
+      accessorKey: "created_at",
       cell: ({ row }) => {
-        const services = row.original.services_actifs;
-        const activeFamilies = getActiveServiceFamilies(services);
-
-        if (!activeFamilies.length) {
-          return (
-            <span className="text-xs text-muted-foreground">
-              Aucun
-            </span>
-          );
-        }
-
-        return (
-          <div className="flex flex-wrap gap-1">
-            {activeFamilies.map((key) => {
-              const def = SERVICE_FAMILIES.find((f) => f.key === key);
-              if (!def) return null;
-              return (
-                <Badge
-                  key={key}
-                  variant="outline"
-                  className={cn(
-                    "border px-1.5 py-0.5 text-[10px] font-medium",
-                    def.className,
-                  )}
-                >
-                  {def.label}
-                </Badge>
-              );
-            })}
-          </div>
-        );
+        const d = new Date(row.original.created_at);
+        const formatted = d.toLocaleDateString("fr-FR");
+        return <span className="text-xs">{formatted}</span>;
       },
-      size: 200,
+      size: 110,
     },
     {
-      header: "CA total HT",
-      accessorKey: "ca_total_ht",
+      header: "Notes",
+      accessorKey: "notes_internes",
       cell: ({ row }) => {
-        const amount = row.original.ca_total_ht ?? 0;
-        if (!amount) {
+        const notes = (row.original.notes_internes ?? "").trim();
+        if (!notes) {
           return (
             <span className="text-xs text-muted-foreground">
               —
             </span>
           );
         }
-        const formatted = new Intl.NumberFormat("fr-FR", {
-          style: "currency",
-          currency: "EUR",
-          maximumFractionDigits: 0,
-        }).format(amount);
-        return <span className="text-xs">{formatted}</span>;
+        const short =
+          notes.length > 80 ? `${notes.slice(0, 77).trim()}…` : notes;
+        return (
+          <span className="text-xs text-muted-foreground">
+            {short}
+          </span>
+        );
       },
-      size: 120,
+      size: 220,
     },
     {
       id: "actions",
       header: "",
-      cell: ({ row }) => <RowActions row={row} onUpdated={fetchClients} />,
-      size: 50,
+      cell: ({ row }) => (
+        <RowActions
+          row={row}
+          onUpdated={fetchClients}
+        />
+      ),
+      size: 60,
       enableSorting: false,
       enableHiding: false,
     },
@@ -605,46 +412,29 @@ export function ClientsTable({
     enableSortingRemoval: false,
   });
 
-  const uniqueStatusValues = useMemo(() => {
-    const values = Array.from(new Set(data.map((d) => d.statut_client)));
-    return values.sort();
-  }, [data]);
-
-  const statusColumn = table.getColumn("statut_client");
-  const selectedStatuses =
-    (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
-
-  const handleStatusChange = (checked: boolean, value: string) => {
-    if (!statusColumn) return;
-    const current = (statusColumn.getFilterValue() as string[]) ?? [];
-    const next = checked
-      ? [...current, value]
-      : current.filter((v) => v !== value);
-    statusColumn.setFilterValue(next.length ? next : undefined);
-  };
-
   const handleClearSearch = () => {
     table.getColumn("nom_affichage")?.setFilterValue("");
+    setSearchValue("");
     if (inputRef.current) inputRef.current.value = "";
   };
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
-      {/* Barre d’actions & filtres */}
+      {/* Barre de recherche & colonnes */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex w-full max-w-xs items-center gap-2">
           <Input
             ref={inputRef}
-            placeholder="Rechercher par nom, email..."
+            placeholder="Rechercher (client, email...)"
             aria-label="Rechercher un client"
-            onChange={(e) =>
-              table.getColumn("nom_affichage")?.setFilterValue(e.target.value)
-            }
+            value={searchValue}
+            onChange={(e) => {
+              const v = e.target.value;
+              setSearchValue(v);
+              table.getColumn("nom_affichage")?.setFilterValue(v);
+            }}
           />
-          {Boolean(
-            (table.getColumn("nom_affichage")?.getFilterValue() as string) ||
-              "",
-          ) && (
+          {Boolean(searchValue) && (
             <Button
               variant="ghost"
               size="icon"
@@ -655,43 +445,6 @@ export function ClientsTable({
             </Button>
           )}
         </div>
-
-        {/* Filtre statut */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              className="inline-flex items-center gap-2"
-            >
-              <ListFilterIcon className="h-4 w-4" />
-              Statuts
-              {selectedStatuses.length > 0 && (
-                <span className="rounded-full bg-primary/10 px-2 text-xs">
-                  {selectedStatuses.length}
-                </span>
-              )}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-52">
-            <DropdownMenuLabel>Filtrer par statut</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            {uniqueStatusValues.map((value) => {
-              const label = statutLabel[value as ClientRow["statut_client"]];
-              return (
-                <DropdownMenuCheckboxItem
-                  key={value}
-                  checked={selectedStatuses.includes(value)}
-                  onCheckedChange={(checked) =>
-                    handleStatusChange(!!checked, value)
-                  }
-                >
-                  {label}
-                </DropdownMenuCheckboxItem>
-              );
-            })}
-          </DropdownMenuContent>
-        </DropdownMenu>
 
         {/* Colonnes visibles */}
         <DropdownMenu>
@@ -712,15 +465,21 @@ export function ClientsTable({
               .getAllLeafColumns()
               .filter((col) => col.getCanHide())
               .map((column) => (
-                <DropdownMenuCheckboxItem
+                <DropdownMenuItem
                   key={column.id}
-                  checked={column.getIsVisible()}
-                  onCheckedChange={(value) =>
-                    column.toggleVisibility(!!value)
+                  className="flex items-center gap-2"
+                  onClick={() =>
+                    column.toggleVisibility(!column.getIsVisible())
                   }
                 >
-                  {column.id}
-                </DropdownMenuCheckboxItem>
+                  <input
+                    type="checkbox"
+                    className="h-3 w-3"
+                    checked={column.getIsVisible()}
+                    readOnly
+                  />
+                  <span className="text-xs">{column.id}</span>
+                </DropdownMenuItem>
               ))}
           </DropdownMenuContent>
         </DropdownMenu>
@@ -749,10 +508,7 @@ export function ClientsTable({
                   return (
                     <TableHead
                       key={header.id}
-                      className={cn(
-                        "whitespace-nowrap text-xs font-medium",
-                        header.column.id === "select" && "w-[32px]",
-                      )}
+                      className={cn("whitespace-nowrap text-xs font-medium")}
                     >
                       {canSort ? (
                         <button
@@ -783,17 +539,14 @@ export function ClientsTable({
               <TableRow>
                 <TableCell
                   colSpan={columns.length}
-                  className="py-8 text-center"
+                  className="py-8 text-center text-sm"
                 >
                   Chargement des clients...
                 </TableCell>
               </TableRow>
             ) : table.getRowModel().rows.length ? (
               table.getRowModel().rows.map((row) => (
-                <TableRow
-                  key={row.id}
-                  data-state={row.getIsSelected() && "selected"}
-                >
+                <TableRow key={row.id}>
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id} className="align-middle">
                       {flexRender(
@@ -808,9 +561,9 @@ export function ClientsTable({
               <TableRow>
                 <TableCell
                   colSpan={columns.length}
-                  className="py-8 text-center"
+                  className="py-8 text-center text-sm"
                 >
-                  Aucun résultat.
+                  Aucun client pour le moment.
                 </TableCell>
               </TableRow>
             )}
@@ -837,7 +590,7 @@ export function ClientsTable({
             </SelectTrigger>
             <SelectContent>
               {pageSizeOptions.map((size) => (
-                <SelectItem key={size} value={String(size)}>
+                <SelectItem key={String(size)} value={String(size)}>
                   {size}
                 </SelectItem>
               ))}
@@ -902,9 +655,9 @@ export function ClientsTable({
   );
 }
 
-// ————————————————————————————
-// RowActions : bouton "..." + sheet Modifier (+ services)
-// ————————————————————————————
+// ------------------------------------------------------------------
+// RowActions : Modifier (ClientFormDialog) + Supprimer (dialog confirmation)
+// ------------------------------------------------------------------
 
 function RowActions({
   row,
@@ -917,76 +670,41 @@ function RowActions({
   const client = row.original;
 
   const [openEdit, setOpenEdit] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [selectedServices, setSelectedServices] = useState<ServiceItem[]>(() =>
-    servicesActifsToItems(client.services_actifs),
-  );
+  const [openDelete, setOpenDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  async function handleUpdate(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-
-    const nom_affichage = (formData.get("nom_affichage") as string)?.trim();
-    const nom_legal = (formData.get("nom_legal") as string)?.trim();
-    const email_general = (formData.get("email_general") as string) || null;
-    const site_web_principal =
-      (formData.get("site_web_principal") as string) || null;
-    const statut_client =
-      (formData.get("statut_client") as ClientRow["statut_client"]) ??
-      client.statut_client;
-    const origine_lead =
-      (formData.get("origine_lead") as ClientRow["origine_lead"]) ??
-      client.origine_lead;
-    const notes_internes =
-      (formData.get("notes_internes") as string) || null;
-
-    if (!nom_affichage || !nom_legal) {
-      toast.error("Champs obligatoires manquants", {
-        description: "Nom légal et nom d’affichage sont requis.",
-      });
-      return;
-    }
-
-    const services_actifs = buildServicesActifsFromItems(selectedServices);
-
+  async function handleDelete() {
     try {
-      setLoading(true);
+      setDeleting(true);
 
       const { error } = await supabase
         .from("clients")
-        .update({
-          nom_affichage,
-          nom_legal,
-          email_general,
-          site_web_principal,
-          statut_client,
-          origine_lead,
-          notes_internes,
-          services_actifs,
-        })
+        .delete()
         .eq("id", client.id);
 
       if (error) {
         console.error(error);
-        toast.error("Erreur lors de la mise à jour du client", {
+        toast.error("Erreur lors de la suppression du client", {
           description: error.message,
         });
         return;
       }
 
-      toast.success("Client mis à jour", {
-        description: `${nom_affichage} a été modifié.`,
+      toast.success("Client supprimé", {
+        description: `${client.nom_affichage} a été supprimé.`,
       });
 
+      setOpenDelete(false);
       setOpenEdit(false);
       onUpdated();
     } finally {
-      setLoading(false);
+      setDeleting(false);
     }
   }
 
   return (
     <>
+      {/* Menu actions */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <div className="flex justify-end">
@@ -1006,204 +724,63 @@ function RowActions({
           <DropdownMenuItem onClick={() => setOpenEdit(true)}>
             Modifier
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="text-red-600 focus:text-red-600"
+            onClick={() => setOpenDelete(true)}
+          >
+            Supprimer
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <Sheet open={openEdit} onOpenChange={setOpenEdit}>
-        <SheetContent
-          side="right"
-          className="flex w-full flex-col gap-4 sm:max-w-lg"
-        >
-          <SheetHeader>
-            <SheetTitle>Modifier le client</SheetTitle>
-            <SheetDescription>
-              Mets à jour les informations principales. Les changements seront
-              immédiatement appliqués.
-            </SheetDescription>
-          </SheetHeader>
+      {/* Dialog édition = réutilise le même form que "Ajouter un client" */}
+      <ClientFormDialog
+        open={openEdit}
+        onOpenChange={setOpenEdit}
+        client={client}                    // 🔥 ici : on passe le client → mode edit
+        defaultStatut={client.statut_client}
+        onSaved={onUpdated}                // pour refetch la table après save
+      />
 
-          <form
-            onSubmit={handleUpdate}
-            className="flex flex-1 flex-col gap-4 overflow-y-auto p-4"
-          >
-            {/* Identité */}
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor={`nom_affichage-${client.id}`}>
-                  Nom d’affichage *
-                </Label>
-                <Input
-                  id={`nom_affichage-${client.id}`}
-                  name="nom_affichage"
-                  defaultValue={client.nom_affichage}
-                  required
-                />
-              </div>
-
-              <div className="grid gap-1.5">
-                <Label htmlFor={`nom_legal-${client.id}`}>Nom légal *</Label>
-                <Input
-                  id={`nom_legal-${client.id}`}
-                  name="nom_legal"
-                  defaultValue={client.nom_legal}
-                  required
-                />
-              </div>
-            </div>
-
-            {/* Coordonnées */}
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor={`site_web_${client.id}`}>Site web</Label>
-                <Input
-                  id={`site_web_${client.id}`}
-                  name="site_web_principal"
-                  defaultValue={client.site_web_principal ?? ""}
-                  placeholder="https://..."
-                />
-              </div>
-
-              <div className="grid gap-1.5">
-                <Label htmlFor={`email_${client.id}`}>Email général</Label>
-                <Input
-                  id={`email_${client.id}`}
-                  name="email_general"
-                  type="email"
-                  defaultValue={client.email_general ?? ""}
-                  placeholder="contact@exemple.com"
-                />
-              </div>
-            </div>
-
-            {/* CRM + origine */}
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor={`statut_${client.id}`}>Statut client</Label>
-                <Select
-                  name="statut_client"
-                  defaultValue={client.statut_client}
-                >
-                  <SelectTrigger id={`statut_${client.id}`}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="prospect">Prospect</SelectItem>
-                    <SelectItem value="propo_envoyee">
-                      Proposition envoyée
-                    </SelectItem>
-                    <SelectItem value="client_actif">Client actif</SelectItem>
-                    <SelectItem value="client_inactif">
-                      Client inactif
-                    </SelectItem>
-                    <SelectItem value="perdu">Perdu</SelectItem>
-                    <SelectItem value="propo_refusee">
-                      Proposition refusée
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="grid gap-1.5">
-                <Label htmlFor={`origine_${client.id}`}>Origine du lead</Label>
-                <Select
-                  name="origine_lead"
-                  defaultValue={client.origine_lead ?? undefined}
-                >
-                  <SelectTrigger id={`origine_${client.id}`}>
-                    <SelectValue placeholder="Sélectionner" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="inbound">Inbound</SelectItem>
-                    <SelectItem value="recommandation">
-                      Recommandation
-                    </SelectItem>
-                    <SelectItem value="appel_offres">
-                      Appel d’offres
-                    </SelectItem>
-                    <SelectItem value="linkedin">LinkedIn</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {/* Services actifs via Combobox */}
-            <Field>
-              <FieldLabel>Services actifs</FieldLabel>
-              <Combobox
-                items={SERVICE_ITEMS}
-                multiple
-                value={selectedServices}
-                onValueChange={(value: ServiceItem[]) =>
-                  setSelectedServices(value)
-                }
-              >
-                <ComboboxChips>
-                  <ComboboxValue>
-                    {(value: ServiceItem[]) => (
-                      <>
-                        {value?.map((item) => (
-                          <ComboboxChip
-                            aria-label={item.label}
-                            key={item.value}
-                          >
-                            {item.label}
-                          </ComboboxChip>
-                        ))}
-                        <ComboboxInput
-                          aria-label="Sélectionner des services"
-                          placeholder={
-                            value.length > 0
-                              ? undefined
-                              : "Sélectionner des services…"
-                          }
-                        />
-                      </>
-                    )}
-                  </ComboboxValue>
-                </ComboboxChips>
-                <ComboboxPopup>
-                  <ComboboxEmpty>Aucun service trouvé.</ComboboxEmpty>
-                  <ComboboxList>
-                    {(item: ServiceItem) => (
-                      <ComboboxItem key={item.value} value={item}>
-                        {item.label}
-                      </ComboboxItem>
-                    )}
-                  </ComboboxList>
-                </ComboboxPopup>
-              </Combobox>
-              <FieldDescription>
-                Choisis les services que l’agence opère pour ce client.
-              </FieldDescription>
-            </Field>
-
-            {/* Notes */}
-            <div className="grid gap-1.5">
-              <Label htmlFor={`notes_${client.id}`}>Notes internes</Label>
-              <Textarea
-                id={`notes_${client.id}`}
-                name="notes_internes"
-                placeholder="Contexte, attentes, points d’attention..."
-                defaultValue={""}
-                rows={4}
-              />
-            </div>
-
-            <SheetFooter className="mt-2 flex justify-end gap-2 p-0">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setOpenEdit(false)}
-              >
-                Annuler
-              </Button>
-              <Button type="submit" disabled={loading}>
-                {loading ? "Enregistrement..." : "Enregistrer"}
-              </Button>
-            </SheetFooter>
-          </form>
-        </SheetContent>
-      </Sheet>
+      {/* Dialog suppression */}
+      <Dialog
+        open={openDelete}
+        onOpenChange={(open) => {
+          if (!deleting) setOpenDelete(open);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Supprimer ce client ?</DialogTitle>
+            <DialogDescription>
+              Cette action est définitive. Le client{" "}
+              <span className="font-semibold text-foreground">
+                {client.nom_affichage}
+              </span>{" "}
+              sera supprimé de la base.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setOpenDelete(false)}
+              disabled={deleting}
+            >
+              Annuler
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={deleting}
+            >
+              {deleting ? "Suppression..." : "Supprimer"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
