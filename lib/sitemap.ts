@@ -5,10 +5,9 @@ import {
   Users,
   FileText,
   BarChart2,
-  Settings,
   FolderTree,
   Receipt,
-  Bell,
+  Calendar,
 } from "lucide-react";
 
 export type NavItem = {
@@ -78,19 +77,15 @@ export const sitemap: { main: NavItem[]; secondary: NavItem[] } = {
       href: "/dashboard/exports",
       icon: FileText,
     },
+    
   ],
 
   // Bloc secondaire (en bas : notifications / settings)
   secondary: [
     {
-      label: "Notifications",
-      href: "/dashboard/notifications",
-      icon: Bell,
+      label: "Agenda",
+      href: "/dashboard/agenda",
+      icon: Calendar,
     },
-    {
-      label: "Paramètres",
-      href: "/dashboard/settings",
-      icon: Settings,
-    },
-  ],
+  ]
 };
