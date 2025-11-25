@@ -58,6 +58,8 @@ import { useState } from "react";
 import { PropositionsTable } from "@/components/propositions-commerciale/propositions-table";
 import { PropositionFormDialog } from "@/components/propositions-commerciale/proposition-form-dialog";
 import { KpiPropositionAcceptVsRefuseCard } from "@/components/kpi/prospection-commerciale/kpi-proposition-accept-vs-refuse-card";
+import { KpiPropositionVolumeCard } from "@/components/kpi/prospection-commerciale/kpi-proposition-volume-card";
+import { KpiPropositionPipelineCard } from "@/components/kpi/prospection-commerciale/kpi-proposition-pipeline-card";
 import { Button } from "@/components/ui/button";
 
 export function PropositionsPageContent() {
@@ -95,6 +97,8 @@ export function PropositionsPageContent() {
   return (
     <div className="space-y-4 p-4">
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <KpiPropositionVolumeCard refreshKey={refreshKpiKey} />
+        <KpiPropositionPipelineCard refreshKey={refreshKpiKey} />
         <KpiPropositionAcceptVsRefuseCard refreshKey={refreshKpiKey}/>
       </div>
       <div className="flex items-center justify-between">
