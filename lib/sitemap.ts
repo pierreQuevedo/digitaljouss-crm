@@ -37,21 +37,29 @@ export const sitemap: { main: NavItem[]; secondary: NavItem[] } = {
       ],
     },
     {
-      label: "Contrats & Projets",
+      label: "Contrats & Propos",
       href: "/dashboard/contrats",
       icon: FolderTree,
       children: [
         {
-          label: "Contrats Réseaux sociaux",
-          href: "/dashboard/contrats/rs",
+          label: "Contrats Statégie Digitale",
+          href: "/dashboard/contrats/strategie-digitale",
         },
         {
-          label: "SEO / SEA / Maintenance",
-          href: "/dashboard/contrats/ref",
+          label: "Contrats Direction Artistique",
+          href: "/dashboard/contrats/direction-artistique",
         },
         {
-          label: "Sites internet",
-          href: "/dashboard/projets/sites",
+          label: "Contrats Conception Web",
+          href: "/dashboard/contrats/conception-web",
+        },
+        {
+          label: "Contrats Social Media Management",
+          href: "/dashboard/contrats/social-media-management",
+        },
+        {
+          label: "Proposition Commerciale",
+          href: "/dashboard/contrats/proposition-commerciale",
         },
       ],
     },
