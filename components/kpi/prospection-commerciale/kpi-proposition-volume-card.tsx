@@ -184,7 +184,7 @@ export function KpiPropositionVolumeCard({
         </div>
 
         <p className="text-xs text-muted-foreground">
-          Basé sur les propositions dont la <code>created_at</code> est comprise
+          Basé sur les propositions actives dont la <code>created_at</code> est comprise
           entre <code>p_start</code> et <code>p_end + 1 jour</code>. Les montants
           prennent en compte uniquement la colonne <code>montant_ht</code>.
         </p>

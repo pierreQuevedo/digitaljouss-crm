@@ -1,4 +1,4 @@
-// components/dashboard/kpi-proposition-pipeline-card.tsx
+// components/kpi/prospection-commerciale/kpi-proposition-pipeline-card.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -26,10 +26,20 @@ type PipelineRow = {
   montant_total_ht: number | null;
 };
 
+// 👉 ce que le KPI remonte au parent (et que la page mappe vers la table)
+export type PipelineSelectStatut =
+  | "a_faire"
+  | "envoyee"
+  | "en_attente_retour"
+  | "all";
+
 type KpiPropositionPipelineCardProps = {
   className?: string;
-  /** Permet de forcer un refetch quand quelque chose change (statut, création…) */
   refreshKey?: number;
+  /** statut actuellement sélectionné (pour highlight + réutilisation) */
+  selectedStatut?: PipelineSelectStatut;
+  /** callback quand on clique sur une carte */
+  onSelectStatut?: (statut: PipelineSelectStatut) => void;
 };
 
 const STATUT_LABEL: Record<StatutProposition, string> = {
@@ -40,7 +50,7 @@ const STATUT_LABEL: Record<StatutProposition, string> = {
   refusee: "Refusée",
 };
 
-// ordre d’affichage voulu pour le pipeline
+// ordre d’affichage = uniquement le pipeline actif
 const PIPELINE_ORDER: StatutProposition[] = [
   "a_faire",
   "envoyee",
@@ -50,10 +60,18 @@ const PIPELINE_ORDER: StatutProposition[] = [
 export function KpiPropositionPipelineCard({
   className,
   refreshKey = 0,
+  selectedStatut,
+  onSelectStatut,
 }: KpiPropositionPipelineCardProps) {
   const supabase = createClient();
   const [rows, setRows] = useState<PipelineRow[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // fallback interne si le parent ne contrôle pas selectedStatut
+  const [internalSelected, setInternalSelected] =
+    useState<PipelineSelectStatut>("all");
+
+  const effectiveSelected = selectedStatut ?? internalSelected;
 
   useEffect(() => {
     const fetchKpi = async () => {
@@ -103,15 +121,63 @@ export function KpiPropositionPipelineCard({
     .map((statut) => rows.find((r) => r.statut === statut))
     .filter((r): r is PipelineRow => Boolean(r));
 
+  // -----------------------------
+  // Gestion du clic sur une card
+  // -----------------------------
+  const handleClickRow = (rowStatut: StatutProposition) => {
+    // on mappe le statut DB vers notre filtre "logique" pour le parent
+    const mapped: PipelineSelectStatut =
+      rowStatut === "a_faire" ||
+      rowStatut === "envoyee" ||
+      rowStatut === "en_attente_retour"
+        ? rowStatut
+        : "all";
+
+    // toggle : si déjà sélectionné -> repasse à "all"
+    const next: PipelineSelectStatut =
+      effectiveSelected === mapped ? "all" : mapped;
+
+    if (selectedStatut === undefined) {
+      // mode non contrôlé : on garde un state interne
+      setInternalSelected(next);
+    }
+
+    onSelectStatut?.(next);
+  };
+
+  const handleReset = () => {
+    if (selectedStatut === undefined) {
+      setInternalSelected("all");
+    }
+    onSelectStatut?.("all");
+  };
+
   return (
     <Card className={cn("h-full", className)}>
       <CardHeader className="space-y-1">
-        <CardTitle className="text-sm font-medium">
-          Pipeline propositions actives
-        </CardTitle>
-        <CardDescription className="text-xs">
-          Répartition par statut (uniquement les propositions actives)
-        </CardDescription>
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <CardTitle className="text-sm font-medium">
+              Pipeline propositions actives
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Répartition par statut (uniquement les propositions actives)
+            </CardDescription>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleReset}
+            className={cn(
+              "rounded-md border px-2 py-1 text-[11px] transition-colors",
+              effectiveSelected === "all"
+                ? "border-transparent text-muted-foreground"
+                : "border-border hover:bg-muted/60",
+            )}
+          >
+            Réinitialiser
+          </button>
+        </div>
       </CardHeader>
 
       <CardContent className="space-y-4">
@@ -121,7 +187,8 @@ export function KpiPropositionPipelineCard({
             {loading ? "…" : totalCount}
           </div>
           <div className="text-xs text-muted-foreground">
-            propositions actives, {loading ? "…" : `${formatAmount(totalAmount)} € HT`}
+            propositions actives,{" "}
+            {loading ? "…" : `${formatAmount(totalAmount)} € HT`}
           </div>
         </div>
 
@@ -146,10 +213,19 @@ export function KpiPropositionPipelineCard({
               const pct =
                 totalCount > 0 ? Math.round((count / totalCount) * 100) : 0;
 
+              const isSelected = effectiveSelected === row.statut;
+
               return (
-                <div
+                <button
                   key={row.statut}
-                  className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2"
+                  type="button"
+                  onClick={() => handleClickRow(row.statut)}
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-xs transition-colors",
+                    "bg-muted/40 hover:bg-muted/70",
+                    isSelected &&
+                      "border-primary/60 bg-primary/5 ring-1 ring-primary/40",
+                  )}
                 >
                   <div className="flex flex-col">
                     <span className="text-xs font-medium">
@@ -163,7 +239,7 @@ export function KpiPropositionPipelineCard({
                   <span className="text-xs text-muted-foreground">
                     {pct} %
                   </span>
-                </div>
+                </button>
               );
             })}
         </div>

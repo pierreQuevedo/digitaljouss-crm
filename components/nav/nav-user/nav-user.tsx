@@ -1,7 +1,12 @@
 // components/nav/nav-user/nav-user.tsx
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import {
+  useEffect,
+  useState,
+  useCallback,
+  type FormEventHandler,
+} from "react";
 import {
   IconDotsVertical,
   IconLogout,
@@ -9,6 +14,8 @@ import {
   IconColorPicker,
 } from "@tabler/icons-react";
 import { useRouter } from "next/navigation";
+
+import type { ColorLike } from "color"; // 👈 on récupère le vrai ColorLike du lib
 
 import { createClient } from "@/lib/supabase/client";
 
@@ -54,7 +61,7 @@ type SessionUser = {
   avatar: string;
 };
 
-// EyeDropper typings (sans any)
+// EyeDropper typings
 type EyeDropperResult = {
   sRGBHex: string;
 };
@@ -78,7 +85,7 @@ function getInitials(name: string | undefined | null) {
   return `${first ?? ""}${second ?? ""}`.toUpperCase() || "?";
 }
 
-// helper [r,g,b] -> hex
+// helper [0-255] -> "00".."FF"
 function toHexPart(value: number) {
   const clamped = Math.max(0, Math.min(255, Math.round(value)));
   return clamped.toString(16).padStart(2, "0");
@@ -158,14 +165,11 @@ export function NavUser({ user }: NavUserProps) {
 
   const initials = getInitials(currentUser.name);
 
-  // appelé par le color picker (on récupère [r,g,b,a])
-  const handleColorChange = useCallback(
-    (rgba: unknown) => {
-      const [r, g, b] = rgba as [number, number, number, number];
-      const hex = `#${toHexPart(r)}${toHexPart(g)}${toHexPart(b)}`;
+  // applique la couleur dans le state + supabase
+  const applyHexColor = useCallback(
+    async (hex: string) => {
       setEventColor(hex);
-
-      void supabase.auth.updateUser({
+      await supabase.auth.updateUser({
         data: {
           event_color: hex,
         },
@@ -173,6 +177,41 @@ export function NavUser({ user }: NavUserProps) {
     },
     [supabase],
   );
+
+  // appelé par le color picker (ColorLike du lib "color")
+  const handleColorChange = useCallback(
+    (value: ColorLike) => {
+      let hex: string | null = null;
+
+      if (typeof value === "string") {
+        hex = value;
+      } else if (Array.isArray(value)) {
+        // [r, g, b] ou [r,g,b,a]
+        const [r, g, b] = value;
+        hex = `#${toHexPart(r)}${toHexPart(g)}${toHexPart(b)}`;
+      } else if (
+        typeof value === "object" &&
+        value !== null &&
+        "r" in value &&
+        "g" in value &&
+        "b" in value
+      ) {
+        const { r, g, b } = value as { r: number; g: number; b: number };
+        hex = `#${toHexPart(r)}${toHexPart(g)}${toHexPart(b)}`;
+      }
+
+      if (!hex) return;
+      void applyHexColor(hex);
+    },
+    [applyHexColor],
+  );
+
+  // wrapper typé qui satisfait le type chelou: FormEventHandler & (ColorLike)=>void
+  const colorPickerOnChange: FormEventHandler<HTMLDivElement> &
+    ((value: ColorLike) => void) = ((value: ColorLike) => {
+      handleColorChange(value);
+    }) as unknown as FormEventHandler<HTMLDivElement> &
+    ((value: ColorLike) => void);
 
   // bouton pipette → EyeDropper API native
   const handleEyeDropper = useCallback(async () => {
@@ -190,16 +229,14 @@ export function NavUser({ user }: NavUserProps) {
     try {
       const eyeDropper = new win.EyeDropper();
       const result = await eyeDropper.open();
-      const hex = result.sRGBHex;
-      setEventColor(hex);
-      await supabase.auth.updateUser({ data: { event_color: hex } });
+      await applyHexColor(result.sRGBHex);
     } catch (err: unknown) {
       if (isAbortError(err)) return; // l'utilisateur a juste annulé
       console.error("EyeDropper error:", err);
     }
-  }, [supabase]);
+  }, [applyHexColor]);
 
-  const quickColors = [
+  const quickColors: string[] = [
     "#F97316", // orange
     "#3B82F6", // bleu
     "#22C55E", // vert
@@ -215,7 +252,7 @@ export function NavUser({ user }: NavUserProps) {
           <Button
             type="button"
             variant="ghost"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-6 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <Avatar className="h-8 w-8 rounded-lg grayscale">
               {currentUser.avatar && (
@@ -286,7 +323,7 @@ export function NavUser({ user }: NavUserProps) {
                 console.error(error);
                 return;
               }
-              router.push("/login");
+              router.push("/auth/login");
             }}
           >
             <IconLogout className="mr-2 h-4 w-4" />
@@ -334,7 +371,8 @@ export function NavUser({ user }: NavUserProps) {
                   Couleur des événements calendrier
                 </p>
                 <p className="text-[11px] text-muted-foreground">
-                  Utilisée comme étiquette pour tes événements dans le calendrier.
+                  Utilisée comme étiquette pour tes événements dans le
+                  calendrier.
                 </p>
               </div>
 
@@ -356,14 +394,7 @@ export function NavUser({ user }: NavUserProps) {
                 <button
                   key={color}
                   type="button"
-                  onClick={() =>
-                    handleColorChange([
-                      parseInt(color.slice(1, 3), 16),
-                      parseInt(color.slice(3, 5), 16),
-                      parseInt(color.slice(5, 7), 16),
-                      1,
-                    ])
-                  }
+                  onClick={() => void applyHexColor(color)}
                   className="h-6 w-6 rounded-full border shadow-sm transition hover:-translate-y-0.5 hover:shadow"
                   style={{ backgroundColor: color }}
                   aria-label={`Choisir ${color}`}
@@ -372,7 +403,7 @@ export function NavUser({ user }: NavUserProps) {
             </div>
 
             {/* ColorPicker complet */}
-            <div className="mt-2 rounded-md border bg-background p-3 space-y-2">
+            <div className="mt-2 space-y-2 rounded-md border bg-background p-3">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] text-muted-foreground">
                   Ajuster manuellement
@@ -392,7 +423,7 @@ export function NavUser({ user }: NavUserProps) {
               <ColorPicker
                 key={eventColor}
                 defaultValue={eventColor}
-                onChange={handleColorChange}
+                onChange={colorPickerOnChange}
                 className="space-y-2"
               >
                 <ColorPickerSelection className="h-36 rounded-md" />

@@ -34,6 +34,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 import { ChevronDown, Check } from "lucide-react";
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
 type StatutProposition =
   | "a_faire"
   | "envoyee"
@@ -49,6 +57,18 @@ type ClientOption = {
 type DbClientRow = {
   id: string;
   nom_affichage: string | null;
+};
+
+type ServiceCategoryOption = {
+  id: string;
+  slug: string;
+  label: string;
+};
+
+type DbServiceCategoryRow = {
+  id: string;
+  slug: string;
+  label: string;
 };
 
 type PropositionFormDialogProps = {
@@ -67,6 +87,43 @@ function getInitials(name: string | null | undefined) {
   return `${first ?? ""}${second ?? ""}`.toUpperCase() || "??";
 }
 
+// mapping couleurs (même logique que pour les services)
+const CATEGORY_COLORS: Record<
+  string,
+  { badge: string; dot: string }
+> = {
+  "strategie-digitale": {
+    badge: "bg-sky-100 text-sky-800 border-sky-200",
+    dot: "bg-sky-500",
+  },
+  "direction-artistique": {
+    badge: "bg-rose-100 text-rose-800 border-rose-200",
+    dot: "bg-rose-500",
+  },
+  "conception-web": {
+    badge: "bg-emerald-100 text-emerald-800 border-emerald-200",
+    dot: "bg-emerald-500",
+  },
+  "social-media-management": {
+    badge: "bg-amber-100 text-amber-800 border-amber-200",
+    dot: "bg-amber-500",
+  },
+};
+
+function getCategoryBadgeClasses(slug?: string | null) {
+  if (!slug) {
+    return "bg-slate-100 text-slate-700 border-slate-200";
+  }
+  return CATEGORY_COLORS[slug]?.badge ?? "bg-slate-100 text-slate-700 border-slate-200";
+}
+
+function getCategoryDotClasses(slug?: string | null) {
+  if (!slug) {
+    return "bg-slate-500";
+  }
+  return CATEGORY_COLORS[slug]?.dot ?? "bg-slate-500";
+}
+
 export function PropositionFormDialog({
   open,
   onOpenChange,
@@ -78,30 +135,49 @@ export function PropositionFormDialog({
 
   const [clients, setClients] = useState<ClientOption[]>([]);
   const [loadingClients, setLoadingClients] = useState(false);
+
+  const [categories, setCategories] = useState<ServiceCategoryOption[]>([]);
+  const [loadingCategories, setLoadingCategories] = useState(false);
+
   const [submitting, setSubmitting] = useState(false);
 
   // état du combobox client
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
 
-  // charger la liste des clients quand le dialog s’ouvre
+  // état de la catégorie
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>(undefined);
+
+  // état du statut (pour le Select shadcn)
+  const [statutValue, setStatutValue] = useState<StatutProposition>("a_faire");
+
+  // charger la liste des clients + catégories quand le dialog s’ouvre
   useEffect(() => {
     if (!open) return;
 
-    const fetchClients = async () => {
+    const fetchData = async () => {
       setLoadingClients(true);
-      const { data, error } = await supabase
-        .from("clients")
-        .select("id, nom_affichage")
-        .order("nom_affichage", { ascending: true });
+      setLoadingCategories(true);
 
-      if (error) {
-        console.error(error);
+      const [clientsRes, categoriesRes] = await Promise.all([
+        supabase
+          .from("clients")
+          .select("id, nom_affichage")
+          .order("nom_affichage", { ascending: true }),
+        supabase
+          .from("service_categories")
+          .select("id, slug, label")
+          .order("label", { ascending: true }),
+      ]);
+
+      // clients
+      if (clientsRes.error) {
+        console.error(clientsRes.error);
         toast.error("Erreur lors du chargement des clients", {
-          description: error.message,
+          description: clientsRes.error.message,
         });
-      } else if (data) {
-        const typed = data as DbClientRow[];
+      } else if (clientsRes.data) {
+        const typed = clientsRes.data as DbClientRow[];
         setClients(
           typed.map((c) => ({
             id: c.id,
@@ -110,12 +186,32 @@ export function PropositionFormDialog({
         );
       }
 
+      // catégories
+      if (categoriesRes.error) {
+        console.error(categoriesRes.error);
+        toast.error("Erreur lors du chargement des catégories", {
+          description: categoriesRes.error.message,
+        });
+      } else if (categoriesRes.data) {
+        const typed = categoriesRes.data as DbServiceCategoryRow[];
+        setCategories(
+          typed.map((c) => ({
+            id: c.id,
+            slug: c.slug,
+            label: c.label,
+          })),
+        );
+      }
+
       setLoadingClients(false);
+      setLoadingCategories(false);
     };
 
-    // reset sélection à chaque ouverture (optionnel, mais plus clair)
+    // reset à chaque ouverture
     setSelectedClientId(null);
-    fetchClients();
+    setSelectedCategoryId(undefined);
+    setStatutValue("a_faire");
+    fetchData();
   }, [open, supabase]);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -140,8 +236,8 @@ export function PropositionFormDialog({
     const url_envoi =
       ((formData.get("url_envoi") as string) || "").trim() || null;
 
-    const statut =
-      ((formData.get("statut") as StatutProposition) || "a_faire") as StatutProposition;
+    const service_category_id = selectedCategoryId ?? null;
+    const statut = statutValue; // 👈 vient du Select shadcn
 
     if (!client_id) {
       toast.error("Client requis", {
@@ -153,6 +249,13 @@ export function PropositionFormDialog({
     if (!titre) {
       toast.error("Titre requis", {
         description: "La proposition doit avoir un titre.",
+      });
+      return;
+    }
+
+    if (!service_category_id) {
+      toast.error("Catégorie requise", {
+        description: "Choisis une catégorie pour cette proposition.",
       });
       return;
     }
@@ -169,6 +272,7 @@ export function PropositionFormDialog({
         notes_internes,
         statut,
         url_envoi,
+        service_category_id, // 👈 nouvelle colonne liée à service_categories
         // etat est géré par la colonne par défaut + trigger
       });
 
@@ -185,12 +289,15 @@ export function PropositionFormDialog({
       });
 
       onCreated?.();
-
       onOpenChange(false);
     } finally {
       setSubmitting(false);
     }
   }
+
+  const selectedCategory = selectedCategoryId
+    ? categories.find((c) => c.id === selectedCategoryId)
+    : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -249,7 +356,6 @@ export function PropositionFormDialog({
                           }}
                         >
                           <Avatar className="mr-2 h-6 w-6">
-                            {/* plus tard tu peux ajouter logo_url si tu l’as */}
                             <AvatarImage src={undefined} alt={c.nom_affichage ?? ""} />
                             <AvatarFallback className="text-xs">
                               {getInitials(c.nom_affichage)}
@@ -296,6 +402,68 @@ export function PropositionFormDialog({
             />
           </div>
 
+          {/* Catégorie de service (obligatoire) */}
+          <div className="grid gap-1.5">
+            <Label htmlFor="service_category">Catégorie *</Label>
+            <Select
+              value={selectedCategoryId}
+              onValueChange={setSelectedCategoryId}
+            >
+              <SelectTrigger id="service_category">
+                <SelectValue
+                  placeholder={
+                    loadingCategories
+                      ? "Chargement des catégories..."
+                      : "Choisir une catégorie"
+                  }
+                >
+                  {selectedCategory ? (
+                    <div
+                      className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-xs ${getCategoryBadgeClasses(
+                        selectedCategory.slug,
+                      )}`}
+                    >
+                      <span
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${getCategoryDotClasses(
+                          selectedCategory.slug,
+                        )}`}
+                      />
+                      <span>{selectedCategory.label}</span>
+                    </div>
+                  ) : null}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {categories.map((cat) => (
+                  <SelectItem key={cat.id} value={cat.id}>
+                    <div
+                      className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-[11px] ${getCategoryBadgeClasses(
+                        cat.slug,
+                      )}`}
+                    >
+                      <span
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${getCategoryDotClasses(
+                          cat.slug,
+                        )}`}
+                      />
+                      <span>{cat.label}</span>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <input
+              type="hidden"
+              name="service_category_id"
+              value={selectedCategoryId ?? ""}
+            />
+            {loadingCategories && (
+              <p className="text-[11px] text-muted-foreground">
+                Chargement des catégories…
+              </p>
+            )}
+          </div>
+
           {/* Montant + devise */}
           <div className="grid grid-cols-3 gap-3">
             <div className="col-span-2 grid gap-1.5">
@@ -335,21 +503,25 @@ export function PropositionFormDialog({
             </p>
           </div>
 
-          {/* Statut initial */}
+          {/* Statut initial (Select shadcn) */}
           <div className="grid gap-1.5">
             <Label htmlFor="statut">Statut initial</Label>
-            <select
-              id="statut"
-              name="statut"
-              defaultValue="a_faire"
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            <Select
+              value={statutValue}
+              onValueChange={(value) =>
+                setStatutValue(value as StatutProposition)
+              }
             >
-              <option value="a_faire">À faire</option>
-              <option value="envoyee">Envoyée</option>
-              <option value="en_attente_retour">En attente de retour</option>
-              <option value="acceptee">Acceptée</option>
-              <option value="refusee">Refusée</option>
-            </select>
+              <SelectTrigger id="statut">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="a_faire">À faire</SelectItem>
+                <SelectItem value="envoyee">Envoyée</SelectItem>
+                <SelectItem value="acceptee">Acceptée</SelectItem>
+                <SelectItem value="refusee">Refusée</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           {/* Notes internes */}

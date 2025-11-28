@@ -19,7 +19,6 @@ type Crumb = {
 
 export function DashboardBreadcrumb() {
   const pathname = usePathname();
-
   const path = pathname || "/dashboard";
 
   const crumbs: Crumb[] = [];
@@ -32,16 +31,24 @@ export function DashboardBreadcrumb() {
   });
 
   if (path !== "/dashboard") {
-    const section = sitemap.main.find((item) =>
-      path.startsWith(item.href) && item.href !== "/dashboard" ? true : false
+    // 👉 on combine main + secondary
+    const allSections = [
+      ...sitemap.main,
+      ...(sitemap.secondary ?? []),
+    ];
+
+    const section = allSections.find((item) =>
+      path.startsWith(item.href) && item.href !== "/dashboard"
     );
 
     if (section) {
+      // niveau 1 : la section (ex: Réglages agence)
       crumbs.push({
         label: section.label,
         href: section.href,
       });
 
+      // niveau 2 : enfant éventuel (ex: /dashboard/clients/123)
       const child = section.children?.find((child) =>
         path.startsWith(child.href)
       );
@@ -52,7 +59,7 @@ export function DashboardBreadcrumb() {
           href: child.href,
         });
       } else {
-        const parts = path.split("/").filter(Boolean); // ["dashboard", "clients", "123"]
+        const parts = path.split("/").filter(Boolean); // ["dashboard", "reglages-agence", "autre"]
         if (parts.length > 2) {
           const last = decodeURIComponent(parts[parts.length - 1]);
           crumbs.push({
@@ -85,8 +92,9 @@ export function DashboardBreadcrumb() {
                 )}
               </BreadcrumbItem>
 
-              {/* IMPORTANT : Separator est un <li> SÉPARÉ, pas enfant */}
-              {!isLast && <BreadcrumbSeparator className="hidden md:block" />}
+              {!isLast && (
+                <BreadcrumbSeparator className="hidden md:block" />
+              )}
             </React.Fragment>
           );
         })}

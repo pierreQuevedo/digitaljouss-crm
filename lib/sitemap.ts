@@ -8,6 +8,8 @@ import {
   FolderTree,
   Receipt,
   Calendar,
+  Settings,
+  MessageCircle,
 } from "lucide-react";
 
 export type NavItem = {
@@ -83,9 +85,19 @@ export const sitemap: { main: NavItem[]; secondary: NavItem[] } = {
   // Bloc secondaire (en bas : notifications / settings)
   secondary: [
     {
+      label: "Feedback",
+      href: "/dashboard/feedback",
+      icon: MessageCircle,
+    },
+    {
       label: "Agenda",
       href: "/dashboard/agenda",
       icon: Calendar,
+    },
+    {
+      label: "Réglages Agence",
+      href: "/dashboard/reglages-agence",
+      icon: Settings,
     },
   ]
 };

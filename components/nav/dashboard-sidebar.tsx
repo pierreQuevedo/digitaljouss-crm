@@ -24,7 +24,7 @@ export function DashboardSidebar() {
     <aside
       style={{ display: "flex", justifyContent: "space-between" }}
       className={cn(
-        "relative hidden shrink-0 border-r bg-muted/40 transition-[width] duration-300 ease-in-out lg:flex lg:flex-col",
+        "sticky top-0 left-0 hidden shrink-0 border-r bg-muted/40 transition-[width] duration-300 ease-in-out lg:flex lg:flex-col max-h-screen",
         collapsed ? "w-16" : "w-64"
       )}
     >
@@ -103,7 +103,7 @@ export function DashboardSidebar() {
         </nav>
       </div>
 
-      <nav className="mt-2 space-y-1 px-2 pb-4">
+      <nav className="mt-2 space-y-1 pb-4">
         {!collapsed && sitemap.secondary.length > 0 && (
           <nav className="mt-auto space-y-1 border-t px-2 py-3">
             {sitemap.secondary.map((item) => {
