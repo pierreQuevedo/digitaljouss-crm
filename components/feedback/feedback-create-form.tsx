@@ -118,14 +118,24 @@ export function FeedbackCreateForm({
       let uploadedPaths: string[] = [];
 
       if (files.length > 0) {
+        console.log("[Feedback] Fichiers à uploader :", files);
+
         const uploadResults = await Promise.all(
           files.map(async (file, index) => {
-            const ext = file.name.split(".").pop() || "png";
-            const fileNameSafe = file.name
+            // on garde l’extension d’origine
+            const ext = file.name.split(".").pop() || "";
+            const baseName = file.name.replace(/\.[^.]+$/, ""); // sans extension
+            const fileNameSafe = baseName
               .toLowerCase()
               .replace(/[^a-z0-9.-]/g, "-");
 
-            const path = `feedback/${feedbackId}/${Date.now()}-${index}-${fileNameSafe}.${ext}`;
+            const finalName = ext
+              ? `${fileNameSafe}-${Date.now()}-${index}.${ext}`
+              : `${fileNameSafe}-${Date.now()}-${index}`;
+
+            const path = `feedback/${feedbackId}/${finalName}`;
+
+            console.log("[Feedback] Upload vers", FEEDBACK_BUCKET, path);
 
             const { error: uploadError } = await supabase.storage
               .from(FEEDBACK_BUCKET)
@@ -134,7 +144,10 @@ export function FeedbackCreateForm({
               });
 
             if (uploadError) {
-              console.error(uploadError);
+              console.error("[Feedback] Erreur upload", uploadError);
+              toast.error("Erreur lors de l'upload d'une capture", {
+                description: uploadError.message,
+              });
               return { ok: false as const, path, error: uploadError };
             }
 
@@ -154,6 +167,7 @@ export function FeedbackCreateForm({
         }
 
         uploadedPaths = success.map((r) => r.path);
+        console.log("[Feedback] Paths uploadés :", uploadedPaths);
       }
 
       // 3) Mise à jour du feedback avec les paths des screenshots

@@ -3,8 +3,13 @@
 
 import { useEffect, useState } from "react";
 import Image from "next/image";
-import type { DragEndEvent } from "@dnd-kit/core";
-import { DndContext, useDroppable, useDraggable } from "@dnd-kit/core";
+import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
+import {
+  DndContext,
+  useDroppable,
+  useDraggable,
+  DragOverlay,
+} from "@dnd-kit/core";
 import {
   BugIcon,
   CheckCircle2Icon,
@@ -15,9 +20,8 @@ import {
   Wand2Icon,
   ImageIcon,
   ClockIcon,
+  EyeIcon,
   UserIcon,
-  GripVerticalIcon, 
-  EyeIcon,          
 } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
@@ -38,7 +42,7 @@ import { Button } from "@/components/ui/button";
 
 type FeedbackStatus = "inbox" | "triage" | "in_progress" | "done" | "rejected";
 type FeedbackType = "bug" | "feature_idea" | "improvement" | "other";
-type Priority = "low" | "medium" | "high" | "critical";
+type Priority = "low" | "medium" | "high" | "urgent";
 
 type FeedbackItem = {
   id: string;
@@ -92,14 +96,14 @@ const PRIORITY_LABEL: Record<Priority, string> = {
   low: "Faible",
   medium: "Moyenne",
   high: "Haute",
-  critical: "Critique",
+  urgent: "Urgente",
 };
 
 const PRIORITY_CLASSNAME: Partial<Record<Priority, string>> = {
   low: "bg-emerald-50 text-emerald-800 border-emerald-100",
   medium: "bg-sky-50 text-sky-800 border-sky-100",
   high: "bg-amber-50 text-amber-800 border-amber-100",
-  critical: "bg-rose-50 text-rose-800 border-rose-100",
+  urgent: "bg-rose-50 text-rose-800 border-rose-100",
 };
 
 function getTypeIcon(type: FeedbackType) {
@@ -132,121 +136,77 @@ function getStatusIcon(status: FeedbackStatus) {
   }
 }
 
-// --------------------
-// Draggable card (handle + bouton dialog)
-// --------------------
+/* -------------------------------------------------------------------------- */
+/*                          Card “présentation pure”                          */
+/* -------------------------------------------------------------------------- */
 
-function FeedbackCard({
-    item,
-    onOpen,
-    isMine,
-  }: {
-    item: FeedbackItem;
-    onOpen?: () => void;
-    isMine: boolean;
-  }) {
-    const { attributes, listeners, setNodeRef, transform, isDragging } =
-      useDraggable({
-        id: item.id,
-      });
-  
-    const style = transform
-      ? {
-          transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
-        }
-      : undefined;
-  
-    const screenshotCount = item.screenshot_paths?.length ?? 0;
-  
-    const createdAt = new Date(item.created_at).toLocaleDateString("fr-FR", {
-      day: "2-digit",
-      month: "2-digit",
-    });
-  
-    const shortUserId =
-      item.created_by && item.created_by.length > 8
-        ? `${item.created_by.slice(0, 8)}…`
-        : item.created_by ?? "Inconnu";
-  
-    return (
-      <div
-        ref={setNodeRef}
-        style={style}
-        className={cn(
-          "group rounded-lg border bg-background p-2.5 text-xs shadow-sm transition-all",
-          "cursor-default",
-          isDragging && "opacity-80 ring-2 ring-primary/40 ring-offset-2",
-        )}
-      >
-        {/* Header : type + titre + priorité + actions */}
+type FeedbackCardProps = {
+  item: FeedbackItem;
+  isMine: boolean;
+  onOpen?: () => void;
+  isDragging?: boolean;
+};
+
+function FeedbackCard({ item, isMine, onOpen, isDragging }: FeedbackCardProps) {
+  const screenshotCount = item.screenshot_paths?.length ?? 0;
+
+  const createdAt = new Date(item.created_at).toLocaleDateString("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+  });
+
+  const shortUserId =
+    item.created_by && item.created_by.length > 8
+      ? `${item.created_by.slice(0, 8)}…`
+      : item.created_by ?? "Inconnu";
+
+  return (
+    <div
+      className={cn(
+        "group rounded-lg border bg-background p-2.5 text-xs shadow-sm transition-all",
+        "cursor-pointer",
+        isDragging && "opacity-80 ring-2 ring-primary/40 ring-offset-2"
+      )}
+    >
+      <div className="flex flex-col gap-2">
+        {/* Titre + priorité */}
         <div className="mb-1 flex items-start justify-between gap-2">
-          <div className="flex items-start gap-1.5">
-            {/* Handle drag */}
-            <button
-              type="button"
-              className="mt-0.5 flex h-5 w-5 cursor-grab items-center justify-center rounded bg-muted text-muted-foreground hover:bg-muted/80 active:cursor-grabbing"
-              {...attributes}
-              {...listeners}
-            >
-              <GripVerticalIcon className="h-3 w-3" />
-            </button>
-  
-            <div className="flex flex-col gap-0.5">
-              <div className="flex items-center gap-1.5">
-                <div className="flex h-5 w-5 items-center justify-center rounded-full bg-muted">
-                  {getTypeIcon(item.type)}
-                </div>
-                <p className="line-clamp-2 text-[13px] font-medium">
-                  {item.title}
-                </p>
-              </div>
-  
-              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                <UserIcon className="h-3 w-3" />
-                <span>{isMine ? "Moi" : shortUserId}</span>
-              </div>
+          <div className="flex items-center gap-1.5">
+            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-muted">
+              {getTypeIcon(item.type)}
             </div>
+            <p className="line-clamp-2 text-[13px] font-medium">{item.title}</p>
           </div>
-  
-          <div className="flex flex-col items-end gap-1">
-            {item.priority && (
-              <span
-                className={cn(
-                  "inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
-                  PRIORITY_CLASSNAME[item.priority] ??
-                    "bg-slate-50 text-slate-700 border-slate-100",
-                )}
-              >
-                {PRIORITY_LABEL[item.priority]}
-              </span>
-            )}
-  
-            {/* Bouton pour ouvrir le dialog */}
-            {onOpen && (
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="h-6 w-6"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpen();
-                }}
-              >
-                <EyeIcon className="h-3.5 w-3.5" />
-              </Button>
-            )}
-          </div>
+
+          {item.priority && (
+            <span
+              className={cn(
+                "inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                PRIORITY_CLASSNAME[item.priority] ??
+                  "bg-slate-50 text-slate-700 border-slate-100"
+              )}
+            >
+              {PRIORITY_LABEL[item.priority]}
+            </span>
+          )}
         </div>
-  
-        {/* Description (preview) */}
+
+        {/* Description courte */}
         {item.description && (
           <p className="mb-1.5 line-clamp-2 text-[11px] text-muted-foreground">
             {item.description}
           </p>
         )}
-  
-        {/* Badges + date */}
+
+        {/* Ligne user */}
+        <div className="mb-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+          <div className="flex items-center gap-1">
+            <UserIcon className="h-3 w-3" />
+            <span>{isMine ? "Moi" : shortUserId}</span>
+          </div>
+        </div>
+
+        {/* Tags + date */}
         <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
           {item.type && (
             <Badge
@@ -257,7 +217,7 @@ function FeedbackCard({
               <span>{TYPE_LABEL[item.type]}</span>
             </Badge>
           )}
-  
+
           {screenshotCount > 0 && (
             <Badge
               variant="outline"
@@ -267,16 +227,81 @@ function FeedbackCard({
               <span>{screenshotCount}</span>
             </Badge>
           )}
-  
+
           <span className="ml-auto text-[10px]">{createdAt}</span>
         </div>
-      </div>
-    );
-  }
 
-// --------------------
-// Droppable column
-// --------------------
+        {/* Bouton détails */}
+        {onOpen && (
+          <button
+            type="button"
+            className="inline-flex w-full items-center justify-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] hover:bg-muted"
+            onClick={(e) => {
+              e.stopPropagation();
+              (
+                e as unknown as React.PointerEvent
+              ).nativeEvent.stopImmediatePropagation?.();
+              onOpen();
+            }}
+            onPointerDown={(e) => {
+              // bloque le drag dnd-kit sur ce bouton
+              e.stopPropagation();
+            }}
+          >
+            <EyeIcon className="h-3 w-3" />
+            <span>Détails</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                              Card draggable                                */
+/* -------------------------------------------------------------------------- */
+
+function DraggableFeedbackCard({
+  item,
+  onOpen,
+  isMine,
+}: {
+  item: FeedbackItem;
+  onOpen?: () => void;
+  isMine: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } =
+    useDraggable({
+      id: item.id,
+    });
+
+  const style = transform
+    ? {
+        transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+      }
+    : undefined;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className="touch-none"
+    >
+      <FeedbackCard
+        item={item}
+        isMine={isMine}
+        onOpen={onOpen}
+        isDragging={isDragging}
+      />
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               Droppable col.                               */
+/* -------------------------------------------------------------------------- */
 
 function FeedbackColumn({
   status,
@@ -326,7 +351,7 @@ function FeedbackColumn({
         ) : (
           <div className="flex flex-col gap-2 overflow-y-auto">
             {items.map((item) => (
-              <FeedbackCard
+              <DraggableFeedbackCard
                 key={item.id}
                 item={item}
                 isMine={item.created_by === currentUserId}
@@ -340,9 +365,9 @@ function FeedbackColumn({
   );
 }
 
-// --------------------
-// Main component
-// --------------------
+/* -------------------------------------------------------------------------- */
+/*                              Main component                                */
+/* -------------------------------------------------------------------------- */
 
 export function FeedbackKanban({ className }: FeedbackKanbanProps) {
   const supabase = createClient();
@@ -353,9 +378,16 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
+  // Pour DragOverlay
+  const [activeId, setActiveId] = useState<string | null>(null);
+
   // Dialog détails
   const [selectedItem, setSelectedItem] = useState<FeedbackItem | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+
+  // Dialog de confirmation de suppression
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   // Récupérer user courant (pour afficher "Moi")
   useEffect(() => {
@@ -409,8 +441,13 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
 
   const totalCount = items.length;
 
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(String(event.active.id));
+  };
+
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
+    setActiveId(null);
     if (!over) return;
 
     const feedbackId = String(active.id);
@@ -466,6 +503,10 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
     });
   };
 
+  const handleDragCancel = () => {
+    setActiveId(null);
+  };
+
   const itemsByStatus: Record<FeedbackStatus, FeedbackItem[]> =
     STATUS_COLUMNS.reduce(
       (acc, col) => {
@@ -486,6 +527,11 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
     setDetailOpen(true);
   };
 
+  // item actif pour DragOverlay
+  const activeItem = activeId
+    ? items.find((i) => i.id === activeId) ?? null
+    : null;
+
   // URLs publiques pour les screenshots de l'item sélectionné
   const screenshotUrls =
     selectedItem?.screenshot_paths?.map((path) => {
@@ -494,6 +540,59 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
         .getPublicUrl(path);
       return { path, url: data.publicUrl as string | null };
     }) ?? [];
+
+  /* ------------------------ suppression avec dialog ------------------------ */
+
+  const handleConfirmDelete = async () => {
+    if (!selectedItem) return;
+    const item = selectedItem;
+    setDeleteLoading(true);
+
+    try {
+      // 1) supprimer la ligne en base
+      const { error: deleteError } = await supabase
+        .from("feedback_items")
+        .delete()
+        .eq("id", item.id);
+
+      if (deleteError) {
+        console.error(deleteError);
+        toast.error("Erreur lors de la suppression du feedback", {
+          description: deleteError.message,
+        });
+        return;
+      }
+
+      // 2) supprimer les captures associées (si présentes)
+      const paths = (item.screenshot_paths ?? []) as string[];
+      if (paths.length > 0) {
+        const { error: storageError } = await supabase.storage
+          .from(FEEDBACK_BUCKET)
+          .remove(paths);
+
+        if (storageError) {
+          console.error(storageError);
+          toast.warning(
+            "Feedback supprimé, mais certaines captures n'ont pas pu être supprimées."
+          );
+        }
+      }
+
+      // 3) maj du state local
+      setItems((prev) => prev.filter((f) => f.id !== item.id));
+
+      // 4) fermer le dialog
+      setDetailOpen(false);
+      setSelectedItem(null);
+
+      // 5) toast de succès
+      toast.success("Feedback supprimé", {
+        description: "Le feedback et ses captures ont été supprimés.",
+      });
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
 
   return (
     <>
@@ -532,7 +631,11 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
               Chargement du kanban…
             </div>
           ) : (
-            <DndContext onDragEnd={handleDragEnd}>
+            <DndContext
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragCancel={handleDragCancel}
+            >
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {STATUS_COLUMNS.map((col) => (
                   <FeedbackColumn
@@ -546,6 +649,19 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
                   />
                 ))}
               </div>
+
+              {/* DragOverlay : la carte reste visible même hors colonne */}
+              <DragOverlay>
+                {activeItem && (
+                  <div className="pointer-events-none">
+                    <FeedbackCard
+                      item={activeItem}
+                      isMine={activeItem.created_by === currentUserId}
+                      isDragging
+                    />
+                  </div>
+                )}
+              </DragOverlay>
             </DndContext>
           )}
         </CardContent>
@@ -658,7 +774,17 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
                 )}
               </div>
 
-              <DialogFooter className="mt-3">
+              <DialogFooter className="mt-3 flex justify-between">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  onClick={handleConfirmDelete}
+                  disabled={deleteLoading}
+                >
+                  {deleteLoading ? "Suppression..." : "Supprimer"}
+                </Button>
+
                 <Button
                   type="button"
                   size="sm"
@@ -670,6 +796,41 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de confirmation de suppression */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-sm">
+              Supprimer ce feedback ?
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Cette action est définitive. Le feedback et ses captures
+              d&apos;écran seront supprimés (si les policies de storage le
+              permettent).
+            </DialogDescription>
+          </DialogHeader>
+
+          <DialogFooter className="mt-3 flex justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setDeleteDialogOpen(false)}
+            >
+              Annuler
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="destructive"
+              onClick={handleConfirmDelete}
+            >
+              Supprimer définitivement
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
