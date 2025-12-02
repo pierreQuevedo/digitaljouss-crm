@@ -401,6 +401,10 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
   }, [supabase]);
 
   useEffect(() => {
+    console.log("[FeedbackKanban] currentUserId =", currentUserId);
+  }, [currentUserId]);
+
+  useEffect(() => {
     const fetchFeedback = async () => {
       setLoading(true);
 
@@ -448,56 +452,70 @@ export function FeedbackKanban({ className }: FeedbackKanbanProps) {
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveId(null);
+  
     if (!over) return;
-
+  
     const feedbackId = String(active.id);
     const newStatus = over.id as FeedbackStatus;
-
+  
+    // statut valide ?
     const isValidStatus = STATUS_COLUMNS.some((col) => col.id === newStatus);
     if (!isValidStatus) return;
-
-    let previousStatus: FeedbackStatus | null = null;
-
-    setItems((prev) => {
-      const found = prev.find((i) => i.id === feedbackId);
-      if (!found || found.status === newStatus) {
-        return prev;
-      }
-      previousStatus = found.status;
-      return prev.map((i) =>
-        i.id === feedbackId ? { ...i, status: newStatus } : i
+  
+    // 🔎 on regarde l'item AVANT de modifier le state
+    const currentItem = items.find((i) => i.id === feedbackId);
+    if (!currentItem) {
+      console.warn("[FeedbackKanban] Feedback non trouvé :", feedbackId);
+      return;
+    }
+  
+    const previousStatus = currentItem.status;
+  
+    // si le statut est déjà le même, on ne fait rien
+    if (previousStatus === newStatus) {
+      console.log(
+        "[FeedbackKanban] Statut identique, pas d'update Supabase",
+        newStatus
       );
-    });
-
-    if (!previousStatus || previousStatus === newStatus) return;
-
+      return;
+    }
+  
+    // ✅ optimistic update côté UI
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === feedbackId ? { ...i, status: newStatus } : i
+      )
+    );
+  
     setUpdatingId(feedbackId);
-
+  
     const { error } = await supabase
       .from("feedback_items")
       .update({ status: newStatus })
       .eq("id", feedbackId);
-
+  
     setUpdatingId(null);
-
+  
     if (error) {
-      console.error(error);
+      console.error("[FeedbackKanban] Update status error", error);
       toast.error("Erreur lors de la mise à jour du statut", {
         description: error.message,
       });
-
-      // rollback
+  
+      // ⏪ rollback du statut côté UI
       setItems((prev) =>
         prev.map((i) =>
-          i.id === feedbackId ? { ...i, status: previousStatus! } : i
+          i.id === feedbackId ? { ...i, status: previousStatus } : i
         )
       );
+  
       return;
     }
-
+  
     const colLabel =
       STATUS_COLUMNS.find((c) => c.id === newStatus)?.label ?? newStatus;
-
+  
+    // 🎉 toast de confirmation
     toast.success("Statut mis à jour", {
       description: `Déplacé vers « ${colLabel} ».`,
     });

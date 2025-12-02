@@ -90,10 +90,15 @@ export const sitemap: { main: NavItem[]; secondary: NavItem[] } = {
       icon: MessageCircle,
     },
     {
-      label: "Agenda",
-      href: "/dashboard/agenda",
+      label: "Agenda (soon)",
+      href: "#",
       icon: Calendar,
     },
+    // {
+    //   label: "Agenda",
+    //   href: "/dashboard/agenda",
+    //   icon: Calendar,
+    // },
     {
       label: "Réglages Agence",
       href: "/dashboard/reglages-agence",
