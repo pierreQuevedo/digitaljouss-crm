@@ -1,7 +1,12 @@
-// components/propositions/propositions-table.tsx
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   type ColumnDef,
@@ -18,6 +23,18 @@ import {
   type Row,
 } from "@tanstack/react-table";
 
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+
 import {
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -28,6 +45,8 @@ import {
   Columns3Icon,
   EllipsisVerticalIcon,
   DownloadIcon,
+  ChevronDown,
+  Check,
 } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
@@ -70,9 +89,18 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
-// ---------- Types ----------
+/* -------------------------------------------------------------------------- */
+/*                                   TYPES                                    */
+/* -------------------------------------------------------------------------- */
 
-export type StatutProposition = "a_faire" | "envoyee" | "acceptee" | "refusee";
+export type StatutProposition =
+  | "a_faire"
+  | "envoyee"
+  | "en_attente_retour"
+  | "acceptee"
+  | "refusee";
+
+export type BillingModel = "one_shot" | "recurring" | "mixed";
 
 export type EtatProposition = "active" | "archive";
 export type EtatFilter = "all" | EtatProposition;
@@ -83,6 +111,25 @@ type ServiceCategory = {
   slug: string;
   label: string;
 };
+
+type ServiceOption = {
+  id: string;
+  label: string;
+  category_id: string | null;
+  default_unit_price: number | null;
+};
+
+type DbServiceRow = {
+  id: string;
+  label: string;
+  category_id: string | null;
+  default_unit_price: number | string | null;
+  is_active: boolean;
+};
+
+/* -------------------------------------------------------------------------- */
+/*                              HELPERS / UI CONST                            */
+/* -------------------------------------------------------------------------- */
 
 // mapping couleurs (même logique que pour les services)
 const CATEGORY_COLORS: Record<string, { badge: string; dot: string }> = {
@@ -121,6 +168,33 @@ function getCategoryDotClasses(slug?: string | null) {
   return CATEGORY_COLORS[slug]?.dot ?? "bg-slate-500";
 }
 
+const pageSizeOptions = [5, 10, 25, 50];
+
+const STATUT_LABEL: Record<StatutProposition, string> = {
+  a_faire: "À faire",
+  envoyee: "Envoyée",
+  en_attente_retour: "En attente retour",
+  acceptee: "Acceptée",
+  refusee: "Refusée",
+};
+
+const BILLING_MODEL_LABEL: Record<BillingModel, string> = {
+  one_shot: "One shot",
+  recurring: "Récurrent",
+  mixed: "Mixte (one shot + récurrent)",
+};
+
+function parseNumber(value: string): number | null {
+  if (!value.trim()) return null;
+  const normalized = value.replace(",", ".");
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                   ROW TYPE                                 */
+/* -------------------------------------------------------------------------- */
+
 // Row front
 type PropositionRow = {
   id: string;
@@ -130,8 +204,14 @@ type PropositionRow = {
   titre: string | null;
   statut: StatutProposition;
   etat: EtatProposition;
+
+  // Montants & facturation
+  billing_model: BillingModel;
   montant_ht: number | null;
+  montant_ht_one_shot: number | null;
+  montant_ht_mensuel: number | null;
   devise: string | null;
+
   notes_internes: string | null;
   date_prevue_envoi: string | null;
   date_envoi: string | null;
@@ -161,8 +241,13 @@ type DbPropositionRow = {
   titre: string | null;
   statut: StatutProposition;
   etat: EtatProposition;
-  montant_ht: number | null;
+
+  billing_model: BillingModel | null;
+  montant_ht: number | string | null;
+  montant_ht_one_shot: number | string | null;
+  montant_ht_mensuel: number | string | null;
   devise: string | null;
+
   notes_internes: string | null;
   date_prevue_envoi: string | null;
   date_envoi: string | null;
@@ -178,9 +263,17 @@ type DbPropositionRow = {
     | null;
 };
 
+/* -------------------------------------------------------------------------- */
+/*                              BUSINESS HELPERS                              */
+/* -------------------------------------------------------------------------- */
+
 // petit helper pour l’état depuis le statut
 function computeEtatFromStatut(statut: StatutProposition): EtatProposition {
-  const actifs: StatutProposition[] = ["a_faire", "envoyee"];
+  const actifs: StatutProposition[] = [
+    "a_faire",
+    "envoyee",
+    "en_attente_retour",
+  ];
   return actifs.includes(statut) ? "active" : "archive";
 }
 
@@ -207,16 +300,9 @@ const multiColumnFilterFn: FilterFn<PropositionRow> = (
   return content.includes(search);
 };
 
-const pageSizeOptions = [5, 10, 25, 50];
-
-const STATUT_LABEL: Record<StatutProposition, string> = {
-  a_faire: "À faire",
-  envoyee: "Envoyée",
-  acceptee: "Acceptée",
-  refusee: "Refusée",
-};
-
-// ---------- Props table (avec filtres contrôlables) ----------
+/* -------------------------------------------------------------------------- */
+/*                               PROPS TABLE                                  */
+/* -------------------------------------------------------------------------- */
 
 type PropositionsTableProps = {
   className?: string;
@@ -229,7 +315,14 @@ type PropositionsTableProps = {
   /** Filtre de statut contrôlé par le parent (optionnel) */
   statutFilter?: StatutFilter;
   onStatutFilterChange?: (v: StatutFilter) => void;
+
+  /** Facultatif : ne charger que les propositions de ce client */
+  clientId?: string;
 };
+
+/* -------------------------------------------------------------------------- */
+/*                               MAIN TABLE                                   */
+/* -------------------------------------------------------------------------- */
 
 export function PropositionsTable({
   className,
@@ -238,6 +331,7 @@ export function PropositionsTable({
   onEtatFilterChange,
   statutFilter: statutFilterProp,
   onStatutFilterChange,
+  clientId,
 }: PropositionsTableProps) {
   const supabase = createClient();
   const [data, setData] = useState<PropositionRow[]>([]);
@@ -283,7 +377,8 @@ export function PropositionsTable({
     if (
       effectiveEtatFilter === "archive" &&
       (effectiveStatutFilter === "a_faire" ||
-        effectiveStatutFilter === "envoyee")
+        effectiveStatutFilter === "envoyee" ||
+        effectiveStatutFilter === "en_attente_retour")
     ) {
       next = "all";
     }
@@ -313,6 +408,7 @@ export function PropositionsTable({
 
   const [categories, setCategories] = useState<ServiceCategory[]>([]);
 
+  // chargement des catégories
   useEffect(() => {
     const fetchCategories = async () => {
       const { data, error } = await supabase
@@ -334,6 +430,7 @@ export function PropositionsTable({
     void fetchCategories();
   }, [supabase]);
 
+  // chargement des propositions
   const fetchPropositions = useCallback(async () => {
     setLoading(true);
 
@@ -346,7 +443,10 @@ export function PropositionsTable({
         titre,
         statut,
         etat,
+        billing_model,
         montant_ht,
+        montant_ht_one_shot,
+        montant_ht_mensuel,
         devise,
         notes_internes,
         date_prevue_envoi,
@@ -368,6 +468,11 @@ export function PropositionsTable({
       `,
       )
       .order("created_at", { ascending: false });
+
+    // 💡 filtre par client si fourni
+    if (clientId) {
+      query = query.eq("client_id", clientId);
+    }
 
     if (effectiveEtatFilter === "active" || effectiveEtatFilter === "archive") {
       query = query.eq("etat", effectiveEtatFilter);
@@ -401,14 +506,37 @@ export function PropositionsTable({
         ? row.service_category[0] ?? null
         : row.service_category;
 
+      const toNumber = (v: number | string | null): number | null => {
+        if (v == null) return null;
+        if (typeof v === "number") return v;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      const montantHt = toNumber(row.montant_ht);
+      const montantHtOneShot = toNumber(row.montant_ht_one_shot);
+      const montantHtMensuel = toNumber(row.montant_ht_mensuel);
+
+      // fallback si montant_ht est null mais qu'on a les deux autres
+      const globalMontant =
+        montantHt ??
+        (montantHtOneShot != null || montantHtMensuel != null
+          ? (montantHtOneShot ?? 0) + (montantHtMensuel ?? 0)
+          : null);
+
       return {
         id: row.id,
         client_id: row.client_id,
         titre: row.titre,
         statut: row.statut,
         etat: row.etat,
-        montant_ht: row.montant_ht,
+
+        billing_model: row.billing_model ?? "one_shot",
+        montant_ht: globalMontant,
+        montant_ht_one_shot: montantHtOneShot,
+        montant_ht_mensuel: montantHtMensuel,
         devise: row.devise,
+
         notes_internes: row.notes_internes,
         date_prevue_envoi: row.date_prevue_envoi,
         date_envoi: row.date_envoi,
@@ -426,7 +554,7 @@ export function PropositionsTable({
 
     setData(mapped);
     setLoading(false);
-  }, [supabase, effectiveEtatFilter, effectiveStatutFilter]);
+  }, [supabase, effectiveEtatFilter, effectiveStatutFilter, clientId]);
 
   useEffect(() => {
     fetchPropositions();
@@ -478,6 +606,10 @@ export function PropositionsTable({
     onAnyChange?.();
   }
 
+  /* -------------------------------------------------------------------------- */
+  /*                                 COLUMNS                                   */
+  /* -------------------------------------------------------------------------- */
+
   const columns: ColumnDef<PropositionRow>[] = [
     {
       header: "Proposition",
@@ -486,11 +618,13 @@ export function PropositionsTable({
         const p = row.original;
         return (
           <div className="flex flex-col">
-            <span className="font-medium text-sm">
+            <span className="text-sm font-medium">
               {p.titre || "Sans titre"}
             </span>
             <span className="text-xs text-muted-foreground">
-              {p.client_nom_affichage || "Client inconnu"}
+              {p.client_nom_affichage ||
+                p.client_nom_legal ||
+                "Client inconnu"}
             </span>
           </div>
         );
@@ -543,19 +677,24 @@ export function PropositionsTable({
               handleChangeStatut(p.id, value as StatutProposition)
             }
           >
-            <SelectTrigger className="h-8 w-[180px] text-xs">
+            <SelectTrigger className="h-8 w-[190px] text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="a_faire">{STATUT_LABEL.a_faire}</SelectItem>
               <SelectItem value="envoyee">{STATUT_LABEL.envoyee}</SelectItem>
-              <SelectItem value="acceptee">{STATUT_LABEL.acceptee}</SelectItem>
+              <SelectItem value="en_attente_retour">
+                {STATUT_LABEL.en_attente_retour}
+              </SelectItem>
+              <SelectItem value="acceptee">
+                {STATUT_LABEL.acceptee}
+              </SelectItem>
               <SelectItem value="refusee">{STATUT_LABEL.refusee}</SelectItem>
             </SelectContent>
           </Select>
         );
       },
-      size: 200,
+      size: 210,
     },
     {
       header: "État",
@@ -569,25 +708,89 @@ export function PropositionsTable({
       size: 110,
     },
     {
-      header: "Montant",
-      accessorKey: "montant_ht",
+      header: "Modèle",
+      accessorKey: "billing_model",
       cell: ({ row }) => {
-        const montant = row.original.montant_ht;
-        const devise = row.original.devise ?? "EUR";
-        if (montant == null) {
-          return <span className="text-xs text-muted-foreground">—</span>;
-        }
+        const model = row.original.billing_model;
         return (
-          <span className="text-xs">
-            {montant.toLocaleString("fr-FR", {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}{" "}
-            {devise}
+          <span className="text-xs text-muted-foreground">
+            {BILLING_MODEL_LABEL[model]}
           </span>
         );
       },
-      size: 130,
+      size: 170,
+    },
+    {
+      header: "Montant",
+      accessorKey: "montant_ht",
+      cell: ({ row }) => {
+        const {
+          montant_ht,
+          montant_ht_one_shot,
+          montant_ht_mensuel,
+          billing_model,
+          devise,
+        } = row.original;
+
+        const d = devise ?? "EUR";
+
+        const fmt = (v: number | null) =>
+          v == null
+            ? "—"
+            : v.toLocaleString("fr-FR", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              });
+
+        if (billing_model === "one_shot") {
+          return (
+            <span className="text-xs">
+              {fmt(montant_ht_one_shot ?? montant_ht)} {d}
+            </span>
+          );
+        }
+
+        if (billing_model === "recurring") {
+          return (
+            <span className="text-xs">
+              {fmt(montant_ht_mensuel)} {d} / mois
+            </span>
+          );
+        }
+
+        // mixed
+        if (
+          billing_model === "mixed" &&
+          (montant_ht_one_shot != null || montant_ht_mensuel != null)
+        ) {
+          const total =
+            (montant_ht_one_shot ?? 0) + (montant_ht_mensuel ?? 0);
+          return (
+            <div className="flex flex-col text-xs">
+              <span>
+                One shot : {fmt(montant_ht_one_shot)} {d}
+              </span>
+              <span>
+                Mensuel : {fmt(montant_ht_mensuel)} {d}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                Total estimé : {fmt(total)} {d}
+              </span>
+            </div>
+          );
+        }
+
+        if (montant_ht == null) {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
+
+        return (
+          <span className="text-xs">
+            {fmt(montant_ht)} {d}
+          </span>
+        );
+      },
+      size: 190,
     },
     {
       header: "Prévue",
@@ -671,6 +874,10 @@ export function PropositionsTable({
     },
   ];
 
+  /* -------------------------------------------------------------------------- */
+  /*                             REACT-TABLE SETUP                             */
+  /* -------------------------------------------------------------------------- */
+
   const table = useReactTable({
     data,
     columns,
@@ -703,6 +910,10 @@ export function PropositionsTable({
     data.length === 0
       ? 0
       : Math.min((pagination.pageIndex + 1) * pagination.pageSize, data.length);
+
+  /* -------------------------------------------------------------------------- */
+  /*                                   RENDER                                  */
+  /* -------------------------------------------------------------------------- */
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
@@ -754,7 +965,7 @@ export function PropositionsTable({
             setEffectiveStatutFilter(value as StatutFilter)
           }
         >
-          <SelectTrigger className="h-8 w-[180px] text-xs">
+          <SelectTrigger className="h-8 w-[200px] text-xs">
             <SelectValue placeholder="Filtrer par statut" />
           </SelectTrigger>
           <SelectContent>
@@ -762,7 +973,12 @@ export function PropositionsTable({
               <>
                 <SelectItem value="all">Tous les statuts</SelectItem>
                 <SelectItem value="a_faire">{STATUT_LABEL.a_faire}</SelectItem>
-                <SelectItem value="envoyee">{STATUT_LABEL.envoyee}</SelectItem>
+                <SelectItem value="envoyee">
+                  {STATUT_LABEL.envoyee}
+                </SelectItem>
+                <SelectItem value="en_attente_retour">
+                  {STATUT_LABEL.en_attente_retour}
+                </SelectItem>
               </>
             )}
 
@@ -772,7 +988,9 @@ export function PropositionsTable({
                 <SelectItem value="acceptee">
                   {STATUT_LABEL.acceptee}
                 </SelectItem>
-                <SelectItem value="refusee">{STATUT_LABEL.refusee}</SelectItem>
+                <SelectItem value="refusee">
+                  {STATUT_LABEL.refusee}
+                </SelectItem>
               </>
             )}
 
@@ -780,11 +998,18 @@ export function PropositionsTable({
               <>
                 <SelectItem value="all">Tous les statuts</SelectItem>
                 <SelectItem value="a_faire">{STATUT_LABEL.a_faire}</SelectItem>
-                <SelectItem value="envoyee">{STATUT_LABEL.envoyee}</SelectItem>
+                <SelectItem value="envoyee">
+                  {STATUT_LABEL.envoyee}
+                </SelectItem>
+                <SelectItem value="en_attente_retour">
+                  {STATUT_LABEL.en_attente_retour}
+                </SelectItem>
                 <SelectItem value="acceptee">
                   {STATUT_LABEL.acceptee}
                 </SelectItem>
-                <SelectItem value="refusee">{STATUT_LABEL.refusee}</SelectItem>
+                <SelectItem value="refusee">
+                  {STATUT_LABEL.refusee}
+                </SelectItem>
               </>
             )}
           </SelectContent>
@@ -994,9 +1219,9 @@ export function PropositionsTable({
   );
 }
 
-// ----------------------------------------------------------
-// RowActions : bouton "..." + Dialog modification de la propo
-// ----------------------------------------------------------
+/* -------------------------------------------------------------------------- */
+/*                               ROW ACTIONS                                  */
+/* -------------------------------------------------------------------------- */
 
 function RowActions({
   row,
@@ -1015,47 +1240,200 @@ function RowActions({
   const [openEdit, setOpenEdit] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // catégorie
   const [selectedCategoryId, setSelectedCategoryId] = useState<
     string | undefined
   >(proposition.service_category_id ?? undefined);
+
+  // statut
   const [statutValue, setStatutValue] = useState<StatutProposition>(
     proposition.statut,
   );
 
-  useEffect(() => {
-    if (openEdit) {
-      setSelectedCategoryId(proposition.service_category_id ?? undefined);
-      setStatutValue(proposition.statut);
-    }
-  }, [openEdit, proposition.service_category_id, proposition.statut]);
+  // modèle de facturation + montants
+  const [billingModel, setBillingModel] = useState<BillingModel>(
+    proposition.billing_model ?? "one_shot",
+  );
+  const [montantOneShot, setMontantOneShot] = useState<string>(
+    proposition.montant_ht_one_shot != null
+      ? String(proposition.montant_ht_one_shot)
+      : "",
+  );
+  const [montantMensuel, setMontantMensuel] = useState<string>(
+    proposition.montant_ht_mensuel != null
+      ? String(proposition.montant_ht_mensuel)
+      : "",
+  );
 
-  const selectedCategory = selectedCategoryId
-    ? categories.find((c) => c.id === selectedCategoryId)
-    : null;
+  // services
+  const [services, setServices] = useState<ServiceOption[]>([]);
+  const [loadingServices, setLoadingServices] = useState(false);
+  const [servicePopoverOpen, setServicePopoverOpen] = useState(false);
+  const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
+
+  // reset quand on ouvre le dialog
+  useEffect(() => {
+    if (!openEdit) return;
+
+    setSelectedCategoryId(proposition.service_category_id ?? undefined);
+    setStatutValue(proposition.statut);
+    setBillingModel(proposition.billing_model ?? "one_shot");
+    setMontantOneShot(
+      proposition.montant_ht_one_shot != null
+        ? String(proposition.montant_ht_one_shot)
+        : "",
+    );
+    setMontantMensuel(
+      proposition.montant_ht_mensuel != null
+        ? String(proposition.montant_ht_mensuel)
+        : "",
+    );
+
+    // fetch services + services déjà liés à cette proposition
+    const fetchServicesAndLinks = async () => {
+      setLoadingServices(true);
+
+      const [servicesRes, linksRes] = await Promise.all([
+        supabase
+          .from("services")
+          .select("id, label, category_id, default_unit_price, is_active")
+          .eq("is_active", true)
+          .order("label", { ascending: true }),
+        supabase
+          .from("proposition_services")
+          .select("service_id")
+          .eq("proposition_id", proposition.id),
+      ]);
+
+      if (servicesRes.error) {
+        console.error(servicesRes.error);
+        toast.error("Erreur lors du chargement des services", {
+          description: servicesRes.error.message,
+        });
+      } else if (servicesRes.data) {
+        const typed = servicesRes.data as DbServiceRow[];
+        setServices(
+          typed.map((s) => ({
+            id: s.id,
+            label: s.label,
+            category_id: s.category_id,
+            default_unit_price:
+              s.default_unit_price == null
+                ? null
+                : typeof s.default_unit_price === "number"
+                ? s.default_unit_price
+                : Number(s.default_unit_price),
+          })),
+        );
+      }
+
+      if (linksRes.error) {
+        console.error(linksRes.error);
+        toast.error(
+          "Erreur lors du chargement des services associés à la proposition",
+          { description: linksRes.error.message },
+        );
+      } else if (linksRes.data) {
+        const linkedIds = (linksRes.data as { service_id: string }[]).map(
+          (r) => r.service_id,
+        );
+        setSelectedServiceIds(linkedIds);
+      }
+
+      setLoadingServices(false);
+    };
+
+    void fetchServicesAndLinks();
+  }, [openEdit, supabase, proposition.id, proposition.service_category_id, proposition.statut, proposition.billing_model, proposition.montant_ht_one_shot, proposition.montant_ht_mensuel]);
+
+  const selectedCategory = useMemo(
+    () =>
+      selectedCategoryId
+        ? categories.find((c) => c.id === selectedCategoryId) ?? null
+        : null,
+    [selectedCategoryId, categories],
+  );
+
+  // modèles autorisés en fonction de la catégorie
+  const allowedBillingModels: BillingModel[] = useMemo(() => {
+    if (!selectedCategory) return ["one_shot", "recurring", "mixed"];
+
+    const slug = selectedCategory.slug;
+
+    if (slug === "social-media-management" || slug === "strategie-digitale") {
+      return ["recurring", "mixed"];
+    }
+
+    if (slug === "direction-artistique" || slug === "conception-web") {
+      return ["one_shot", "mixed"];
+    }
+
+    return ["one_shot", "recurring", "mixed"];
+  }, [selectedCategory]);
+
+  // modèle par défaut quand on change de catégorie
+  useEffect(() => {
+    if (!selectedCategory) return;
+
+    const slug = selectedCategory.slug;
+
+    if (slug === "social-media-management" || slug === "strategie-digitale") {
+      setBillingModel("recurring");
+      return;
+    }
+
+    if (slug === "direction-artistique" || slug === "conception-web") {
+      setBillingModel("one_shot");
+      return;
+    }
+  }, [selectedCategory]);
+
+  // services disponibles selon la catégorie
+  const availableServices = useMemo(() => {
+    if (!selectedCategoryId) return [] as ServiceOption[];
+    return services.filter((s) => s.category_id === selectedCategoryId);
+  }, [services, selectedCategoryId]);
+
+  const selectedServicesLabels = useMemo(() => {
+    if (!selectedServiceIds.length) return "";
+    const labels = availableServices
+      .filter((s) => selectedServiceIds.includes(s.id))
+      .map((s) => s.label);
+    if (!labels.length) return "";
+    if (labels.length <= 2) return labels.join(", ");
+    return `${labels.slice(0, 2).join(", ")} + ${labels.length - 2} autres`;
+  }, [availableServices, selectedServiceIds]);
 
   async function handleUpdate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
 
     const titre = ((formData.get("titre") as string) || "").trim() || null;
-
-    const montantRaw = ((formData.get("montant_ht") as string) || "").trim();
-    const montant_ht =
-      montantRaw === "" ? null : Number(montantRaw.replace(",", "."));
-
     const devise = ((formData.get("devise") as string) || "").trim() || null;
-
     const notes_internes =
       ((formData.get("notes_internes") as string) || "").trim() || null;
-
     const date_prevue_envoi =
       ((formData.get("date_prevue_envoi") as string) || "").trim() || null;
-
     const url_envoi =
       ((formData.get("url_envoi") as string) || "").trim() || null;
 
     const service_category_id = selectedCategoryId ?? null;
     const statut = statutValue;
+
+    const montant_ht_one_shot = parseNumber(montantOneShot);
+    const montant_ht_mensuel = parseNumber(montantMensuel);
+
+    const montant_ht: number | null = (() => {
+      if (billingModel === "one_shot") return montant_ht_one_shot;
+      if (billingModel === "recurring") return montant_ht_mensuel;
+      if (billingModel === "mixed") {
+        const one = montant_ht_one_shot ?? 0;
+        const mens = montant_ht_mensuel ?? 0;
+        if (!one && !mens) return null;
+        return one + mens;
+      }
+      return null;
+    })();
 
     if (!titre) {
       toast.error("Titre requis", {
@@ -1064,20 +1442,59 @@ function RowActions({
       return;
     }
 
+    if (!service_category_id) {
+      toast.error("Catégorie requise", {
+        description: "Choisis une catégorie pour cette proposition.",
+      });
+      return;
+    }
+
+    // validations montants (comme dans le form de création)
+    if (billingModel === "one_shot" && montant_ht_one_shot == null) {
+      toast.error("Montant requis", {
+        description: "Pour un modèle one shot, renseigne le montant HT.",
+      });
+      return;
+    }
+
+    if (billingModel === "recurring" && montant_ht_mensuel == null) {
+      toast.error("Montant mensuel requis", {
+        description:
+          "Pour un modèle récurrent, renseigne le montant HT mensuel.",
+      });
+      return;
+    }
+
+    if (
+      billingModel === "mixed" &&
+      montant_ht_one_shot == null &&
+      montant_ht_mensuel == null
+    ) {
+      toast.error("Montants requis", {
+        description:
+          "Pour un modèle mixte, renseigne au moins un montant (one shot ou mensuel).",
+      });
+      return;
+    }
+
     try {
       setLoading(true);
 
+      // 1) update de la proposition
       const { error } = await supabase
         .from("propositions")
         .update({
           titre,
-          montant_ht,
           devise,
           notes_internes,
           statut,
           date_prevue_envoi,
           url_envoi,
           service_category_id,
+          billing_model: billingModel,
+          montant_ht,
+          montant_ht_one_shot,
+          montant_ht_mensuel,
         })
         .eq("id", proposition.id);
 
@@ -1087,6 +1504,38 @@ function RowActions({
           description: error.message,
         });
         return;
+      }
+
+      // 2) update des services liés
+      // on simplifie : delete puis insert
+      const { error: deleteError } = await supabase
+        .from("proposition_services")
+        .delete()
+        .eq("proposition_id", proposition.id);
+
+      if (deleteError) {
+        console.error(deleteError);
+        toast.error(
+          "Proposition mise à jour, mais erreur lors de la mise à jour des services",
+          { description: deleteError.message },
+        );
+      } else if (selectedServiceIds.length > 0) {
+        const rows = selectedServiceIds.map((serviceId) => ({
+          proposition_id: proposition.id,
+          service_id: serviceId,
+        }));
+
+        const { error: linkError } = await supabase
+          .from("proposition_services")
+          .insert(rows);
+
+        if (linkError) {
+          console.error(linkError);
+          toast.error(
+            "Proposition mise à jour, mais erreur lors de l'association des services",
+            { description: linkError.message },
+          );
+        }
       }
 
       toast.success("Proposition mise à jour", {
@@ -1130,197 +1579,383 @@ function RowActions({
           <DialogHeader>
             <DialogTitle>Modifier la proposition</DialogTitle>
             <DialogDescription>
-              Mets à jour le titre, la catégorie, le statut et les informations
-              principales.
+              Mets à jour le titre, la catégorie, les services, le modèle de
+              facturation et les informations principales.
             </DialogDescription>
           </DialogHeader>
 
-          <form onSubmit={handleUpdate} className="space-y-4">
-            {/* Titre + client */}
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor={`titre_${proposition.id}`}>Titre *</Label>
-                <Input
-                  id={`titre_${proposition.id}`}
-                  name="titre"
-                  defaultValue={proposition.titre ?? ""}
-                  required
-                />
-              </div>
-
-              <div className="grid gap-1.5">
-                <Label>Client</Label>
-                <p className="text-xs text-muted-foreground">
-                  {proposition.client_nom_affichage ||
-                    proposition.client_nom_legal ||
-                    "Client inconnu"}
-                </p>
-              </div>
-            </div>
-
-            {/* Catégorie */}
-            <div className="grid gap-1.5">
-              <Label htmlFor={`service_category_${proposition.id}`}>
-                Catégorie
-              </Label>
-              <Select
-                value={selectedCategoryId ?? ""}
-                onValueChange={(value) => setSelectedCategoryId(value)}
+          {/* même pattern que le form de création : max-h + ScrollArea */}
+          <div className="mt-2 flex max-h-[70vh] flex-col">
+            <ScrollArea className="min-h-0 flex-1 pr-2">
+              <form
+                onSubmit={handleUpdate}
+                className="space-y-4 pb-4"
+                id={`edit-proposition-${proposition.id}`}
               >
-                <SelectTrigger id={`service_category_${proposition.id}`}>
-                  <SelectValue placeholder="Choisir une catégorie">
-                    {selectedCategory && (
-                      <div
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs",
-                          getCategoryBadgeClasses(selectedCategory.slug),
+                {/* Titre + client (client non éditable) */}
+                <div className="grid gap-3">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor={`titre_${proposition.id}`}>Titre *</Label>
+                    <Input
+                      id={`titre_${proposition.id}`}
+                      name="titre"
+                      defaultValue={proposition.titre ?? ""}
+                      required
+                    />
+                  </div>
+
+                  <div className="grid gap-1.5">
+                    <Label>Client</Label>
+                    <p className="text-xs text-muted-foreground">
+                      {proposition.client_nom_affichage ||
+                        proposition.client_nom_legal ||
+                        "Client inconnu"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Catégorie */}
+                <div className="grid gap-1.5">
+                  <Label htmlFor={`service_category_${proposition.id}`}>
+                    Catégorie
+                  </Label>
+                  <Select
+                    value={selectedCategoryId ?? ""}
+                    onValueChange={(value) => {
+                      setSelectedCategoryId(value);
+                      setSelectedServiceIds([]); // reset services si catégorie change
+                    }}
+                  >
+                    <SelectTrigger id={`service_category_${proposition.id}`}>
+                      <SelectValue placeholder="Choisir une catégorie">
+                        {selectedCategory && (
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs",
+                              getCategoryBadgeClasses(selectedCategory.slug),
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                "inline-block h-1.5 w-1.5 rounded-full",
+                                getCategoryDotClasses(selectedCategory.slug),
+                              )}
+                            />
+                            <span>{selectedCategory.label}</span>
+                          </span>
                         )}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {categories.map((cat) => (
+                        <SelectItem key={cat.id} value={cat.id}>
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]",
+                              getCategoryBadgeClasses(cat.slug),
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                "inline-block h-1.5 w-1.5 rounded-full",
+                                getCategoryDotClasses(cat.slug),
+                              )}
+                            />
+                            <span>{cat.label}</span>
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <input
+                    type="hidden"
+                    name="service_category_id"
+                    value={selectedCategoryId ?? ""}
+                  />
+                </div>
+
+                {/* Services associés (multi-select) */}
+                <div className="grid gap-1.5">
+                  <Label>Services associés</Label>
+
+                  <Popover
+                    open={servicePopoverOpen}
+                    onOpenChange={setServicePopoverOpen}
+                  >
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full justify-between"
+                        disabled={!selectedCategoryId || loadingServices}
                       >
-                        <span
-                          className={cn(
-                            "inline-block h-1.5 w-1.5 rounded-full",
-                            getCategoryDotClasses(selectedCategory.slug),
-                          )}
+                        {selectedCategoryId
+                          ? loadingServices
+                            ? "Chargement des services..."
+                            : selectedServiceIds.length === 0
+                            ? "Sélectionner un ou plusieurs services"
+                            : selectedServicesLabels
+                          : "Choisis d'abord une catégorie"}
+                        <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[320px] p-0">
+                      <Command>
+                        <CommandInput
+                          className="px-3"
+                          placeholder="Rechercher un service..."
                         />
-                        <span>{selectedCategory.label}</span>
-                      </div>
+                        <CommandList>
+                          <CommandEmpty>
+                            {selectedCategoryId
+                              ? "Aucun service pour cette catégorie."
+                              : "Choisis d'abord une catégorie."}
+                          </CommandEmpty>
+                          <CommandGroup heading="Services">
+                            {availableServices.map((s) => {
+                              const isSelected =
+                                selectedServiceIds.includes(s.id);
+                              return (
+                                <CommandItem
+                                  key={s.id}
+                                  value={s.label}
+                                  onSelect={() => {
+                                    setSelectedServiceIds((prev) =>
+                                      isSelected
+                                        ? prev.filter((id) => id !== s.id)
+                                        : [...prev, s.id],
+                                    );
+                                  }}
+                                >
+                                  <Check
+                                    className={`mr-2 h-4 w-4 ${
+                                      isSelected ? "opacity-100" : "opacity-0"
+                                    }`}
+                                  />
+                                  <span>{s.label}</span>
+                                </CommandItem>
+                              );
+                            })}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+
+                  <input
+                    type="hidden"
+                    name="service_ids"
+                    value={selectedServiceIds.join(",")}
+                  />
+
+                  {selectedCategoryId &&
+                    availableServices.length === 0 &&
+                    !loadingServices && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Aucun service actif rattaché à cette catégorie pour le
+                        moment.
+                      </p>
                     )}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {categories.map((cat) => (
-                    <SelectItem key={cat.id} value={cat.id}>
-                      <div
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]",
-                          getCategoryBadgeClasses(cat.slug),
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "inline-block h-1.5 w-1.5 rounded-full",
-                            getCategoryDotClasses(cat.slug),
-                          )}
+                </div>
+
+                {/* Modèle de facturation */}
+                <div className="grid gap-1.5">
+                  <Label htmlFor={`billing_model_${proposition.id}`}>
+                    Modèle de facturation
+                  </Label>
+                  <Select
+                    value={billingModel}
+                    onValueChange={(value) =>
+                      setBillingModel(value as BillingModel)
+                    }
+                  >
+                    <SelectTrigger id={`billing_model_${proposition.id}`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {allowedBillingModels.map((bm) => (
+                        <SelectItem key={bm} value={bm}>
+                          {BILLING_MODEL_LABEL[bm]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Montants selon le modèle */}
+                {billingModel === "one_shot" && (
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-2 grid gap-1.5">
+                      <Label htmlFor={`montant_one_shot_${proposition.id}`}>
+                        Montant HT (one shot)
+                      </Label>
+                      <Input
+                        id={`montant_one_shot_${proposition.id}`}
+                        inputMode="decimal"
+                        placeholder="0,00"
+                        value={montantOneShot}
+                        onChange={(e) => setMontantOneShot(e.target.value)}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor={`devise_${proposition.id}`}>Devise</Label>
+                      <Input
+                        id={`devise_${proposition.id}`}
+                        name="devise"
+                        defaultValue={proposition.devise ?? "EUR"}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {billingModel === "recurring" && (
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-2 grid gap-1.5">
+                      <Label htmlFor={`montant_mensuel_${proposition.id}`}>
+                        Montant HT mensuel
+                      </Label>
+                      <Input
+                        id={`montant_mensuel_${proposition.id}`}
+                        inputMode="decimal"
+                        placeholder="0,00"
+                        value={montantMensuel}
+                        onChange={(e) => setMontantMensuel(e.target.value)}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor={`devise_${proposition.id}`}>Devise</Label>
+                      <Input
+                        id={`devise_${proposition.id}`}
+                        name="devise"
+                        defaultValue={proposition.devise ?? "EUR"}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {billingModel === "mixed" && (
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-2 space-y-3">
+                      <div className="grid gap-1.5">
+                        <Label htmlFor={`montant_one_shot_${proposition.id}`}>
+                          Montant HT one shot
+                        </Label>
+                        <Input
+                          id={`montant_one_shot_${proposition.id}`}
+                          inputMode="decimal"
+                          placeholder="0,00"
+                          value={montantOneShot}
+                          onChange={(e) => setMontantOneShot(e.target.value)}
                         />
-                        <span>{cat.label}</span>
                       </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <input
-                type="hidden"
-                name="service_category_id"
-                value={selectedCategoryId ?? ""}
-              />
-            </div>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor={`montant_mensuel_${proposition.id}`}>
+                          Montant HT mensuel
+                        </Label>
+                        <Input
+                          id={`montant_mensuel_${proposition.id}`}
+                          inputMode="decimal"
+                          placeholder="0,00"
+                          value={montantMensuel}
+                          onChange={(e) => setMontantMensuel(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor={`devise_${proposition.id}`}>Devise</Label>
+                      <Input
+                        id={`devise_${proposition.id}`}
+                        name="devise"
+                        defaultValue={proposition.devise ?? "EUR"}
+                      />
+                    </div>
+                  </div>
+                )}
 
-            {/* Montant + devise */}
-            <div className="grid grid-cols-3 gap-3">
-              <div className="col-span-2 grid gap-1.5">
-                <Label htmlFor={`montant_ht_${proposition.id}`}>
-                  Montant HT
-                </Label>
-                <Input
-                  id={`montant_ht_${proposition.id}`}
-                  name="montant_ht"
-                  type="number"
-                  step="0.01"
-                  defaultValue={
-                    proposition.montant_ht != null
-                      ? String(proposition.montant_ht)
-                      : ""
-                  }
-                  placeholder="0.00"
-                />
-              </div>
+                {/* Date prévue d’envoi */}
+                <div className="grid gap-1.5">
+                  <Label htmlFor={`date_prevue_envoi_${proposition.id}`}>
+                    Date prévue d’envoi
+                  </Label>
+                  <Input
+                    id={`date_prevue_envoi_${proposition.id}`}
+                    name="date_prevue_envoi"
+                    type="date"
+                    defaultValue={
+                      proposition.date_prevue_envoi
+                        ? proposition.date_prevue_envoi.slice(0, 10)
+                        : ""
+                    }
+                  />
+                  {!proposition.date_prevue_envoi && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Aucune date planifiée pour l’instant.
+                    </p>
+                  )}
+                </div>
 
-              <div className="grid gap-1.5">
-                <Label htmlFor={`devise_${proposition.id}`}>Devise</Label>
-                <Input
-                  id={`devise_${proposition.id}`}
-                  name="devise"
-                  defaultValue={proposition.devise ?? "EUR"}
-                />
-              </div>
-            </div>
+                {/* Lien docs envoyés */}
+                <div className="grid gap-1.5">
+                  <Label htmlFor={`url_envoi_${proposition.id}`}>
+                    Lien des documents envoyés
+                  </Label>
+                  <Input
+                    id={`url_envoi_${proposition.id}`}
+                    name="url_envoi"
+                    type="url"
+                    defaultValue={proposition.url_envoi ?? ""}
+                    placeholder="https://wetransfer.com/..."
+                  />
+                  {!proposition.url_envoi && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Ajoute ici le lien WeTransfer / Drive des documents
+                      envoyés au client.
+                    </p>
+                  )}
+                </div>
 
-            {/* Date prévue d’envoi */}
-            <div className="grid gap-1.5">
-              <Label htmlFor={`date_prevue_envoi_${proposition.id}`}>
-                Date prévue d’envoi
-              </Label>
-              <Input
-                id={`date_prevue_envoi_${proposition.id}`}
-                name="date_prevue_envoi"
-                type="date"
-                defaultValue={
-                  proposition.date_prevue_envoi
-                    ? proposition.date_prevue_envoi.slice(0, 10)
-                    : ""
-                }
-              />
-              {!proposition.date_prevue_envoi && (
-                <p className="text-[11px] text-muted-foreground">
-                  Aucune date planifiée pour l’instant.
-                </p>
-              )}
-            </div>
+                {/* Statut */}
+                <div className="grid gap-1.5">
+                  <Label htmlFor={`statut_${proposition.id}`}>Statut</Label>
+                  <Select
+                    value={statutValue}
+                    onValueChange={(value) =>
+                      setStatutValue(value as StatutProposition)
+                    }
+                  >
+                    <SelectTrigger id={`statut_${proposition.id}`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="a_faire">À faire</SelectItem>
+                      <SelectItem value="envoyee">Envoyée</SelectItem>
+                      <SelectItem value="en_attente_retour">
+                        En attente retour
+                      </SelectItem>
+                      <SelectItem value="acceptee">Acceptée</SelectItem>
+                      <SelectItem value="refusee">Refusée</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
 
-            {/* Lien docs envoyés */}
-            <div className="grid gap-1.5">
-              <Label htmlFor={`url_envoi_${proposition.id}`}>
-                Lien des documents envoyés
-              </Label>
-              <Input
-                id={`url_envoi_${proposition.id}`}
-                name="url_envoi"
-                type="url"
-                defaultValue={proposition.url_envoi ?? ""}
-                placeholder="https://wetransfer.com/..."
-              />
-              {!proposition.url_envoi && (
-                <p className="text-[11px] text-muted-foreground">
-                  Ajoute ici le lien WeTransfer / Drive des documents envoyés au
-                  client.
-                </p>
-              )}
-            </div>
+                {/* Notes internes */}
+                <div className="grid gap-1.5">
+                  <Label htmlFor={`notes_${proposition.id}`}>
+                    Notes internes
+                  </Label>
+                  <Textarea
+                    id={`notes_${proposition.id}`}
+                    name="notes_internes"
+                    defaultValue={proposition.notes_internes ?? ""}
+                    placeholder="Contexte, objections, next steps..."
+                    rows={4}
+                  />
+                </div>
+              </form>
+            </ScrollArea>
 
-            {/* Statut */}
-            <div className="grid gap-1.5">
-              <Label htmlFor={`statut_${proposition.id}`}>Statut</Label>
-              <Select
-                value={statutValue}
-                onValueChange={(value) =>
-                  setStatutValue(value as StatutProposition)
-                }
-              >
-                <SelectTrigger id={`statut_${proposition.id}`}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="a_faire">À faire</SelectItem>
-                  <SelectItem value="envoyee">Envoyée</SelectItem>
-                  <SelectItem value="acceptee">Acceptée</SelectItem>
-                  <SelectItem value="refusee">Refusée</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Notes internes */}
-            <div className="grid gap-1.5">
-              <Label htmlFor={`notes_${proposition.id}`}>Notes internes</Label>
-              <Textarea
-                id={`notes_${proposition.id}`}
-                name="notes_internes"
-                defaultValue={proposition.notes_internes ?? ""}
-                placeholder="Contexte, objections, next steps..."
-                rows={4}
-              />
-            </div>
-
-            <DialogFooter className="mt-2 flex justify-end gap-2">
+            {/* Footer fixe (comme pour la création) */}
+            <DialogFooter className="mt-2 flex shrink-0 justify-end gap-2 bg-background pt-3">
               <Button
                 type="button"
                 variant="outline"
@@ -1329,11 +1964,15 @@ function RowActions({
               >
                 Annuler
               </Button>
-              <Button type="submit" disabled={loading}>
+              <Button
+                type="submit"
+                form={`edit-proposition-${proposition.id}`}
+                disabled={loading}
+              >
                 {loading ? "Enregistrement..." : "Enregistrer"}
               </Button>
             </DialogFooter>
-          </form>
+          </div>
         </DialogContent>
       </Dialog>
     </>

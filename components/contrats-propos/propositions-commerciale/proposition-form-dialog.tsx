@@ -1,7 +1,6 @@
-// components/propositions-commerciale/proposition-form-dialog.tsx
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
@@ -42,12 +41,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+import { ScrollArea } from "@/components/ui/scroll-area";
+
+/* -------------------------------------------------------------------------- */
+/*                                   TYPES                                    */
+/* -------------------------------------------------------------------------- */
+
 type StatutProposition =
   | "a_faire"
   | "envoyee"
   | "en_attente_retour"
   | "acceptee"
   | "refusee";
+
+type BillingModel = "one_shot" | "recurring" | "mixed";
 
 type ClientOption = {
   id: string;
@@ -71,6 +78,21 @@ type DbServiceCategoryRow = {
   label: string;
 };
 
+type ServiceOption = {
+  id: string;
+  label: string;
+  category_id: string | null;
+  default_unit_price: number | null;
+};
+
+type DbServiceRow = {
+  id: string;
+  label: string;
+  category_id: string | null;
+  default_unit_price: number | string | null;
+  is_active: boolean;
+};
+
 type PropositionFormDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -78,7 +100,10 @@ type PropositionFormDialogProps = {
   onCreated?: () => void;
 };
 
-// helper pour les initiales
+/* -------------------------------------------------------------------------- */
+/*                               HELPERS UI                                   */
+/* -------------------------------------------------------------------------- */
+
 function getInitials(name: string | null | undefined) {
   if (!name) return "??";
   const parts = name.trim().split(/\s+/);
@@ -87,11 +112,7 @@ function getInitials(name: string | null | undefined) {
   return `${first ?? ""}${second ?? ""}`.toUpperCase() || "??";
 }
 
-// mapping couleurs (même logique que pour les services)
-const CATEGORY_COLORS: Record<
-  string,
-  { badge: string; dot: string }
-> = {
+const CATEGORY_COLORS: Record<string, { badge: string; dot: string }> = {
   "strategie-digitale": {
     badge: "bg-sky-100 text-sky-800 border-sky-200",
     dot: "bg-sky-500",
@@ -114,7 +135,10 @@ function getCategoryBadgeClasses(slug?: string | null) {
   if (!slug) {
     return "bg-slate-100 text-slate-700 border-slate-200";
   }
-  return CATEGORY_COLORS[slug]?.badge ?? "bg-slate-100 text-slate-700 border-slate-200";
+  return (
+    CATEGORY_COLORS[slug]?.badge ??
+    "bg-slate-100 text-slate-700 border-slate-200"
+  );
 }
 
 function getCategoryDotClasses(slug?: string | null) {
@@ -123,6 +147,23 @@ function getCategoryDotClasses(slug?: string | null) {
   }
   return CATEGORY_COLORS[slug]?.dot ?? "bg-slate-500";
 }
+
+const BILLING_MODEL_LABEL: Record<BillingModel, string> = {
+  one_shot: "One shot",
+  recurring: "Récurrent",
+  mixed: "Mixte (one shot + récurrent)",
+};
+
+function parseNumber(value: string): number | null {
+  if (!value.trim()) return null;
+  const normalized = value.replace(",", ".");
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               MAIN COMPONENT                               */
+/* -------------------------------------------------------------------------- */
 
 export function PropositionFormDialog({
   open,
@@ -139,27 +180,43 @@ export function PropositionFormDialog({
   const [categories, setCategories] = useState<ServiceCategoryOption[]>([]);
   const [loadingCategories, setLoadingCategories] = useState(false);
 
+  const [services, setServices] = useState<ServiceOption[]>([]);
+  const [loadingServices, setLoadingServices] = useState(false);
+
   const [submitting, setSubmitting] = useState(false);
 
-  // état du combobox client
+  // client
   const [clientPopoverOpen, setClientPopoverOpen] = useState(false);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
 
-  // état de la catégorie
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>(undefined);
+  // catégorie
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>(
+    undefined,
+  );
 
-  // état du statut (pour le Select shadcn)
+  // statut
   const [statutValue, setStatutValue] = useState<StatutProposition>("a_faire");
 
-  // charger la liste des clients + catégories quand le dialog s’ouvre
+  // modèle de facturation
+  const [billingModel, setBillingModel] = useState<BillingModel>("one_shot");
+  const [montantOneShot, setMontantOneShot] = useState<string>("");
+  const [montantMensuel, setMontantMensuel] = useState<string>("");
+
+  // services multi-select
+  const [servicePopoverOpen, setServicePopoverOpen] = useState(false);
+  const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
+
+  /* ----------------------------- LOAD DATA ON OPEN ----------------------------- */
+
   useEffect(() => {
     if (!open) return;
 
     const fetchData = async () => {
       setLoadingClients(true);
       setLoadingCategories(true);
+      setLoadingServices(true);
 
-      const [clientsRes, categoriesRes] = await Promise.all([
+      const [clientsRes, categoriesRes, servicesRes] = await Promise.all([
         supabase
           .from("clients")
           .select("id, nom_affichage")
@@ -167,6 +224,11 @@ export function PropositionFormDialog({
         supabase
           .from("service_categories")
           .select("id, slug, label")
+          .order("label", { ascending: true }),
+        supabase
+          .from("services")
+          .select("id, label, category_id, default_unit_price, is_active")
+          .eq("is_active", true)
           .order("label", { ascending: true }),
       ]);
 
@@ -203,16 +265,107 @@ export function PropositionFormDialog({
         );
       }
 
+      // services
+      if (servicesRes.error) {
+        console.error(servicesRes.error);
+        toast.error("Erreur lors du chargement des services", {
+          description: servicesRes.error.message,
+        });
+      } else if (servicesRes.data) {
+        const typed = servicesRes.data as DbServiceRow[];
+        setServices(
+          typed.map((s) => ({
+            id: s.id,
+            label: s.label,
+            category_id: s.category_id,
+            default_unit_price:
+              s.default_unit_price == null
+                ? null
+                : typeof s.default_unit_price === "number"
+                ? s.default_unit_price
+                : Number(s.default_unit_price),
+          })),
+        );
+      }
+
       setLoadingClients(false);
       setLoadingCategories(false);
+      setLoadingServices(false);
     };
 
-    // reset à chaque ouverture
+    // reset global state à chaque ouverture
     setSelectedClientId(null);
     setSelectedCategoryId(undefined);
+    setSelectedServiceIds([]);
     setStatutValue("a_faire");
-    fetchData();
+    setBillingModel("one_shot");
+    setMontantOneShot("");
+    setMontantMensuel("");
+
+    void fetchData();
   }, [open, supabase]);
+
+  const selectedCategory = useMemo(
+    () =>
+      selectedCategoryId
+        ? categories.find((c) => c.id === selectedCategoryId) ?? null
+        : null,
+    [selectedCategoryId, categories],
+  );
+
+  /* ---------------------- billing models autorisés / défaut -------------------- */
+
+  const allowedBillingModels: BillingModel[] = useMemo(() => {
+    if (!selectedCategory) return ["one_shot", "recurring", "mixed"];
+
+    const slug = selectedCategory.slug;
+
+    if (slug === "social-media-management" || slug === "strategie-digitale") {
+      return ["recurring", "mixed"];
+    }
+
+    if (slug === "direction-artistique" || slug === "conception-web") {
+      return ["one_shot", "mixed"];
+    }
+
+    return ["one_shot", "recurring", "mixed"];
+  }, [selectedCategory]);
+
+  // met à jour le modèle par défaut quand la catégorie change
+  useEffect(() => {
+    if (!selectedCategory) return;
+
+    const slug = selectedCategory.slug;
+
+    if (slug === "social-media-management" || slug === "strategie-digitale") {
+      setBillingModel("recurring");
+      return;
+    }
+
+    if (slug === "direction-artistique" || slug === "conception-web") {
+      setBillingModel("one_shot");
+      return;
+    }
+  }, [selectedCategory]);
+
+  /* ------------------------ Services filtrés par catégorie ------------------------ */
+
+  const availableServices = useMemo(() => {
+    if (!selectedCategoryId) return [] as ServiceOption[];
+    return services.filter((s) => s.category_id === selectedCategoryId);
+  }, [services, selectedCategoryId]);
+
+  const selectedServicesLabels = useMemo(() => {
+    if (!selectedServiceIds.length) return "";
+    const labels = availableServices
+      .filter((s) => selectedServiceIds.includes(s.id))
+      .map((s) => s.label);
+    if (!labels.length) return "";
+    if (labels.length <= 2) return labels.join(", ");
+    return `${labels.slice(0, 2).join(", ")} + ${labels.length - 2} autres`;
+  }, [availableServices, selectedServiceIds]);
+
+  /* --------------------------------- SUBMIT --------------------------------- */
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -220,9 +373,6 @@ export function PropositionFormDialog({
 
     const client_id = (formData.get("client_id") as string) || null;
     const titre = ((formData.get("titre") as string) || "").trim();
-    const montantRaw = ((formData.get("montant_ht") as string) || "").trim();
-    const montant_ht =
-      montantRaw === "" ? null : Number(montantRaw.replace(",", "."));
 
     const devise =
       ((formData.get("devise") as string) || "").trim() || "EUR";
@@ -237,8 +387,24 @@ export function PropositionFormDialog({
       ((formData.get("url_envoi") as string) || "").trim() || null;
 
     const service_category_id = selectedCategoryId ?? null;
-    const statut = statutValue; // 👈 vient du Select shadcn
+    const statut = statutValue;
 
+    const montant_ht_one_shot = parseNumber(montantOneShot);
+    const montant_ht_mensuel = parseNumber(montantMensuel);
+
+    const montant_ht: number | null = (() => {
+      if (billingModel === "one_shot") return montant_ht_one_shot;
+      if (billingModel === "recurring") return montant_ht_mensuel;
+      if (billingModel === "mixed") {
+        const one = montant_ht_one_shot ?? 0;
+        const mens = montant_ht_mensuel ?? 0;
+        if (!one && !mens) return null;
+        return one + mens;
+      }
+      return null;
+    })();
+
+    // validations
     if (!client_id) {
       toast.error("Client requis", {
         description: "Tu dois sélectionner un client ou un prospect.",
@@ -260,21 +426,55 @@ export function PropositionFormDialog({
       return;
     }
 
+    if (billingModel === "one_shot" && montant_ht_one_shot == null) {
+      toast.error("Montant requis", {
+        description: "Pour un modèle one shot, renseigne le montant HT.",
+      });
+      return;
+    }
+
+    if (billingModel === "recurring" && montant_ht_mensuel == null) {
+      toast.error("Montant mensuel requis", {
+        description:
+          "Pour un modèle récurrent, renseigne le montant HT mensuel.",
+      });
+      return;
+    }
+
+    if (
+      billingModel === "mixed" &&
+      montant_ht_one_shot == null &&
+      montant_ht_mensuel == null
+    ) {
+      toast.error("Montants requis", {
+        description:
+          "Pour un modèle mixte, renseigne au moins un montant (one shot ou mensuel).",
+      });
+      return;
+    }
+
     try {
       setSubmitting(true);
 
-      const { error } = await supabase.from("propositions").insert({
-        client_id,
-        titre,
-        montant_ht,
-        devise,
-        date_prevue_envoi,
-        notes_internes,
-        statut,
-        url_envoi,
-        service_category_id, // 👈 nouvelle colonne liée à service_categories
-        // etat est géré par la colonne par défaut + trigger
-      });
+      // 1) création de la proposition (avec modèle de facturation + montants)
+      const { data, error } = await supabase
+        .from("propositions")
+        .insert({
+          client_id,
+          titre,
+          devise,
+          date_prevue_envoi,
+          notes_internes,
+          statut,
+          url_envoi,
+          service_category_id,
+          billing_model: billingModel,
+          montant_ht,
+          montant_ht_one_shot,
+          montant_ht_mensuel,
+        })
+        .select("id")
+        .single();
 
       if (error) {
         console.error(error);
@@ -282,6 +482,30 @@ export function PropositionFormDialog({
           description: error.message,
         });
         return;
+      }
+
+      const inserted = data as { id: string };
+
+      // 2) si des services sont sélectionnés, on les rattache
+      if (selectedServiceIds.length > 0) {
+        const rows = selectedServiceIds.map((serviceId) => ({
+          proposition_id: inserted.id,
+          service_id: serviceId,
+        }));
+
+        const { error: linkError } = await supabase
+          .from("proposition_services")
+          .insert(rows);
+
+        if (linkError) {
+          console.error(linkError);
+          toast.error(
+            "Proposition créée, mais erreur lors de l'association des services",
+            {
+              description: linkError.message,
+            },
+          );
+        }
       }
 
       toast.success("Proposition créée", {
@@ -295,13 +519,10 @@ export function PropositionFormDialog({
     }
   }
 
-  const selectedCategory = selectedCategoryId
-    ? categories.find((c) => c.id === selectedCategoryId)
-    : null;
+  /* --------------------------------- RENDER --------------------------------- */
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* bouton trigger (fourni par le parent) */}
       <DialogTrigger asChild>{children}</DialogTrigger>
 
       <DialogContent className="max-w-lg">
@@ -312,230 +533,433 @@ export function PropositionFormDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Client */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="client_id">Client *</Label>
-
-            {/* champ caché pour le submit */}
-            <input type="hidden" name="client_id" value={selectedClientId ?? ""} />
-
-            <Popover open={clientPopoverOpen} onOpenChange={setClientPopoverOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  role="combobox"
-                  className="w-full justify-between"
-                  disabled={loadingClients}
-                >
-                  {selectedClientId
-                    ? clients.find((c) => c.id === selectedClientId)?.nom_affichage ??
-                      "Sans nom"
-                    : loadingClients
-                    ? "Chargement..."
-                    : "Sélectionner un client"}
-                  <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
-                </Button>
-              </PopoverTrigger>
-
-              <PopoverContent className="w-[320px] p-0">
-                <Command>
-                  <CommandInput className="px-3" placeholder="Rechercher un client..." />
-                  <CommandList>
-                    <CommandEmpty>Aucun client trouvé.</CommandEmpty>
-
-                    <CommandGroup heading="Clients">
-                      {clients.map((c) => (
-                        <CommandItem
-                          key={c.id}
-                          value={c.nom_affichage ?? "Sans nom"}
-                          onSelect={() => {
-                            setSelectedClientId(c.id);
-                            setClientPopoverOpen(false);
-                          }}
-                        >
-                          <Avatar className="mr-2 h-6 w-6">
-                            <AvatarImage src={undefined} alt={c.nom_affichage ?? ""} />
-                            <AvatarFallback className="text-xs">
-                              {getInitials(c.nom_affichage)}
-                            </AvatarFallback>
-                          </Avatar>
-                          <span>{c.nom_affichage || "Sans nom"}</span>
-                          {selectedClientId === c.id && (
-                            <Check className="ml-auto h-4 w-4" />
-                          )}
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-
-                    <CommandSeparator />
-
-                    <CommandGroup>
-                      <CommandItem
-                        value="__add_new_client__"
-                        onSelect={() => {
-                          setClientPopoverOpen(false);
-                          onOpenChange(false);
-                          router.push("/dashboard/clients?add=1");
-                        }}
-                      >
-                        <span className="text-sm text-blue-600">
-                          + Ajouter un nouveau client
-                        </span>
-                      </CommandItem>
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
-          </div>
-
-          {/* Titre */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="titre">Titre *</Label>
-            <Input
-              id="titre"
-              name="titre"
-              placeholder="Refonte site web Acme – Offre 2025"
-              required
-            />
-          </div>
-
-          {/* Catégorie de service (obligatoire) */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="service_category">Catégorie *</Label>
-            <Select
-              value={selectedCategoryId}
-              onValueChange={setSelectedCategoryId}
+        {/* Wrapper avec hauteur max + layout colonne */}
+        <div className="mt-2 flex max-h-[70vh] flex-col">
+          {/* Zone scrollable */}
+          <ScrollArea className="min-h-0 flex-1 pr-2">
+            <form
+              id="proposition-form"
+              onSubmit={handleSubmit}
+              className="space-y-4 pb-4"
             >
-              <SelectTrigger id="service_category">
-                <SelectValue
-                  placeholder={
-                    loadingCategories
-                      ? "Chargement des catégories..."
-                      : "Choisir une catégorie"
+              {/* Client */}
+              <div className="grid gap-1.5">
+                <Label htmlFor="client_id">Prospect *</Label>
+
+                <input
+                  type="hidden"
+                  name="client_id"
+                  value={selectedClientId ?? ""}
+                />
+
+                <Popover
+                  open={clientPopoverOpen}
+                  onOpenChange={setClientPopoverOpen}
+                >
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      role="combobox"
+                      className="w-full justify-between"
+                      disabled={loadingClients}
+                    >
+                      {selectedClientId
+                        ? clients.find((c) => c.id === selectedClientId)
+                            ?.nom_affichage ?? "Sans nom"
+                        : loadingClients
+                        ? "Chargement..."
+                        : "Sélectionner un prospect"}
+                      <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+
+                  <PopoverContent className="w-[320px] p-0">
+                    <Command>
+                      <CommandInput
+                        className="px-3"
+                        placeholder="Rechercher un prospect..."
+                      />
+                      <CommandList>
+                        <CommandEmpty>Aucun prospect trouvé.</CommandEmpty>
+
+                        <CommandGroup heading="Clients">
+                          {clients.map((c) => (
+                            <CommandItem
+                              key={c.id}
+                              value={c.nom_affichage ?? "Sans nom"}
+                              onSelect={() => {
+                                setSelectedClientId(c.id);
+                                setClientPopoverOpen(false);
+                              }}
+                            >
+                              <Avatar className="mr-2 h-6 w-6">
+                                <AvatarImage
+                                  src={undefined}
+                                  alt={c.nom_affichage ?? ""}
+                                />
+                                <AvatarFallback className="text-xs">
+                                  {getInitials(c.nom_affichage)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <span>{c.nom_affichage || "Sans nom"}</span>
+                              {selectedClientId === c.id && (
+                                <Check className="ml-auto h-4 w-4" />
+                              )}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+
+                        <CommandSeparator />
+
+                        <CommandGroup>
+                          <CommandItem
+                            value="__add_new_client__"
+                            onSelect={() => {
+                              setClientPopoverOpen(false);
+                              onOpenChange(false);
+                              router.push("/dashboard/clients/prospects?add=1");
+                            }}
+                          >
+                            <span className="text-sm text-blue-600">
+                              + Ajouter un nouveau prospect
+                            </span>
+                          </CommandItem>
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+              </div>
+
+              {/* Titre */}
+              <div className="grid gap-1.5">
+                <Label htmlFor="titre">Titre *</Label>
+                <Input
+                  id="titre"
+                  name="titre"
+                  placeholder="Refonte site web Acme – Offre 2025"
+                  required
+                />
+              </div>
+
+              {/* Catégorie */}
+              <div className="grid gap-1.5">
+                <Label htmlFor="service_category">Catégorie *</Label>
+                <Select
+                  value={selectedCategoryId}
+                  onValueChange={(value) => {
+                    setSelectedCategoryId(value);
+                    setSelectedServiceIds([]); // reset services quand on change de catégorie
+                  }}
+                >
+                  <SelectTrigger id="service_category">
+                    <SelectValue
+                      placeholder={
+                        loadingCategories
+                          ? "Chargement des catégories..."
+                          : "Choisir une catégorie"
+                      }
+                    >
+                      {selectedCategory ? (
+                        <div
+                          className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-xs ${getCategoryBadgeClasses(
+                            selectedCategory.slug,
+                          )}`}
+                        >
+                          <span
+                            className={`inline-block h-1.5 w-1.5 rounded-full ${getCategoryDotClasses(
+                              selectedCategory.slug,
+                            )}`}
+                          />
+                          <span>{selectedCategory.label}</span>
+                        </div>
+                      ) : null}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((cat) => (
+                      <SelectItem key={cat.id} value={cat.id}>
+                        <div
+                          className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-[11px] ${getCategoryBadgeClasses(
+                            cat.slug,
+                          )}`}
+                        >
+                          <span
+                            className={`inline-block h-1.5 w-1.5 rounded-full ${getCategoryDotClasses(
+                              cat.slug,
+                            )}`}
+                          />
+                          <span>{cat.label}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <input
+                  type="hidden"
+                  name="service_category_id"
+                  value={selectedCategoryId ?? ""}
+                />
+                {loadingCategories && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Chargement des catégories…
+                  </p>
+                )}
+              </div>
+
+              {/* Services associés (multi-select) */}
+              <div className="grid gap-1.5">
+                <Label>Services associés</Label>
+
+                <Popover
+                  open={servicePopoverOpen}
+                  onOpenChange={setServicePopoverOpen}
+                >
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full justify-between"
+                      disabled={!selectedCategoryId || loadingServices}
+                    >
+                      {selectedCategoryId
+                        ? loadingServices
+                          ? "Chargement des services..."
+                          : selectedServiceIds.length === 0
+                          ? "Sélectionner un ou plusieurs services"
+                          : selectedServicesLabels
+                        : "Choisis d'abord une catégorie"}
+                      <ChevronDown className="ml-2 h-4 w-4 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[320px] p-0">
+                    <Command>
+                      <CommandInput
+                        className="px-3"
+                        placeholder="Rechercher un service..."
+                      />
+                      <CommandList>
+                        <CommandEmpty>
+                          {selectedCategoryId
+                            ? "Aucun service pour cette catégorie."
+                            : "Choisis d'abord une catégorie."}
+                        </CommandEmpty>
+                        <CommandGroup heading="Services">
+                          {availableServices.map((s) => {
+                            const isSelected =
+                              selectedServiceIds.includes(s.id);
+                            return (
+                              <CommandItem
+                                key={s.id}
+                                value={s.label}
+                                onSelect={() => {
+                                  setSelectedServiceIds((prev) =>
+                                    isSelected
+                                      ? prev.filter((id) => id !== s.id)
+                                      : [...prev, s.id],
+                                  );
+                                }}
+                              >
+                                <Check
+                                  className={`mr-2 h-4 w-4 ${
+                                    isSelected ? "opacity-100" : "opacity-0"
+                                  }`}
+                                />
+                                <span>{s.label}</span>
+                              </CommandItem>
+                            );
+                          })}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+
+                <input
+                  type="hidden"
+                  name="service_ids"
+                  value={selectedServiceIds.join(",")}
+                />
+
+                {selectedCategoryId &&
+                  availableServices.length === 0 &&
+                  !loadingServices && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Aucun service actif rattaché à cette catégorie pour le
+                      moment.
+                    </p>
+                  )}
+              </div>
+
+              {/* Modèle de facturation */}
+              <div className="grid gap-1.5">
+                <Label htmlFor="billing_model">Modèle de facturation</Label>
+                <Select
+                  value={billingModel}
+                  onValueChange={(value) =>
+                    setBillingModel(value as BillingModel)
                   }
                 >
-                  {selectedCategory ? (
-                    <div
-                      className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-xs ${getCategoryBadgeClasses(
-                        selectedCategory.slug,
-                      )}`}
-                    >
-                      <span
-                        className={`inline-block h-1.5 w-1.5 rounded-full ${getCategoryDotClasses(
-                          selectedCategory.slug,
-                        )}`}
+                  <SelectTrigger id="billing_model">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allowedBillingModels.map((bm) => (
+                      <SelectItem key={bm} value={bm}>
+                        {BILLING_MODEL_LABEL[bm]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Montants selon le modèle */}
+              {billingModel === "one_shot" && (
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-2 grid gap-1.5">
+                    <Label htmlFor="montant_one_shot">
+                      Montant HT (one shot)
+                    </Label>
+                    <Input
+                      id="montant_one_shot"
+                      inputMode="decimal"
+                      placeholder="0,00"
+                      value={montantOneShot}
+                      onChange={(e) => setMontantOneShot(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="devise">Devise</Label>
+                    <Input id="devise" name="devise" defaultValue="EUR" />
+                  </div>
+                </div>
+              )}
+
+              {billingModel === "recurring" && (
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-2 grid gap-1.5">
+                    <Label htmlFor="montant_mensuel">
+                      Montant HT mensuel
+                    </Label>
+                    <Input
+                      id="montant_mensuel"
+                      inputMode="decimal"
+                      placeholder="0,00"
+                      value={montantMensuel}
+                      onChange={(e) => setMontantMensuel(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="devise">Devise</Label>
+                    <Input id="devise" name="devise" defaultValue="EUR" />
+                  </div>
+                </div>
+              )}
+
+              {billingModel === "mixed" && (
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-2 space-y-3">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="montant_one_shot">
+                        Montant HT one shot
+                      </Label>
+                      <Input
+                        id="montant_one_shot"
+                        inputMode="decimal"
+                        placeholder="0,00"
+                        value={montantOneShot}
+                        onChange={(e) => setMontantOneShot(e.target.value)}
                       />
-                      <span>{selectedCategory.label}</span>
                     </div>
-                  ) : null}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {categories.map((cat) => (
-                  <SelectItem key={cat.id} value={cat.id}>
-                    <div
-                      className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-[11px] ${getCategoryBadgeClasses(
-                        cat.slug,
-                      )}`}
-                    >
-                      <span
-                        className={`inline-block h-1.5 w-1.5 rounded-full ${getCategoryDotClasses(
-                          cat.slug,
-                        )}`}
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="montant_mensuel">
+                        Montant HT mensuel
+                      </Label>
+                      <Input
+                        id="montant_mensuel"
+                        inputMode="decimal"
+                        placeholder="0,00"
+                        value={montantMensuel}
+                        onChange={(e) => setMontantMensuel(e.target.value)}
                       />
-                      <span>{cat.label}</span>
                     </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <input
-              type="hidden"
-              name="service_category_id"
-              value={selectedCategoryId ?? ""}
-            />
-            {loadingCategories && (
-              <p className="text-[11px] text-muted-foreground">
-                Chargement des catégories…
-              </p>
-            )}
-          </div>
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="devise">Devise</Label>
+                    <Input id="devise" name="devise" defaultValue="EUR" />
+                  </div>
+                </div>
+              )}
 
-          {/* Montant + devise */}
-          <div className="grid grid-cols-3 gap-3">
-            <div className="col-span-2 grid gap-1.5">
-              <Label htmlFor="montant_ht">Montant HT</Label>
-              <Input
-                id="montant_ht"
-                name="montant_ht"
-                type="number"
-                step="0.01"
-                placeholder="0.00"
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="devise">Devise</Label>
-              <Input id="devise" name="devise" defaultValue="EUR" />
-            </div>
-          </div>
+              {/* Date prévue d’envoi */}
+              <div className="grid gap-1.5">
+                <Label htmlFor="date_prevue_envoi">
+                  Date prévue d’envoi
+                </Label>
+                <Input
+                  id="date_prevue_envoi"
+                  name="date_prevue_envoi"
+                  type="date"
+                />
+              </div>
 
-          {/* Date prévue d’envoi */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="date_prevue_envoi">Date prévue d’envoi</Label>
-            <Input id="date_prevue_envoi" name="date_prevue_envoi" type="date" />
-          </div>
+              {/* Lien docs envoyés */}
+              <div className="grid gap-1.5">
+                <Label htmlFor="url_envoi">
+                  Lien des documents envoyés
+                </Label>
+                <Input
+                  id="url_envoi"
+                  name="url_envoi"
+                  type="url"
+                  placeholder="https://wetransfer.com/..."
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Ajoute ici le lien WeTransfer / Drive des documents envoyés
+                  au client (optionnel).
+                </p>
+              </div>
 
-          {/* Lien docs envoyés */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="url_envoi">Lien des documents envoyés</Label>
-            <Input
-              id="url_envoi"
-              name="url_envoi"
-              type="url"
-              placeholder="https://wetransfer.com/..."
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Ajoute ici le lien WeTransfer / Drive des documents envoyés au client
-              (optionnel).
-            </p>
-          </div>
+              {/* Statut initial */}
+              <div className="grid gap-1.5">
+                <Label htmlFor="statut">Statut initial</Label>
+                <Select
+                  value={statutValue}
+                  onValueChange={(value) =>
+                    setStatutValue(value as StatutProposition)
+                  }
+                >
+                  <SelectTrigger id="statut">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="a_faire">À faire</SelectItem>
+                    <SelectItem value="envoyee">Envoyée</SelectItem>
+                    <SelectItem value="en_attente_retour">
+                      En attente retour
+                    </SelectItem>
+                    <SelectItem value="acceptee">Acceptée</SelectItem>
+                    <SelectItem value="refusee">Refusée</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-          {/* Statut initial (Select shadcn) */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="statut">Statut initial</Label>
-            <Select
-              value={statutValue}
-              onValueChange={(value) =>
-                setStatutValue(value as StatutProposition)
-              }
-            >
-              <SelectTrigger id="statut">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="a_faire">À faire</SelectItem>
-                <SelectItem value="envoyee">Envoyée</SelectItem>
-                <SelectItem value="acceptee">Acceptée</SelectItem>
-                <SelectItem value="refusee">Refusée</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+              {/* Notes internes */}
+              <div className="grid gap-1.5">
+                <Label htmlFor="notes_internes">Notes internes</Label>
+                <Textarea
+                  id="notes_internes"
+                  name="notes_internes"
+                  placeholder="Contexte, objections, next steps..."
+                  rows={4}
+                />
+              </div>
+            </form>
+          </ScrollArea>
 
-          {/* Notes internes */}
-          <div className="grid gap-1.5">
-            <Label htmlFor="notes_internes">Notes internes</Label>
-            <Textarea
-              id="notes_internes"
-              name="notes_internes"
-              placeholder="Contexte, objections, next steps..."
-              rows={4}
-            />
-          </div>
-
-          <DialogFooter className="mt-2 flex justify-end gap-2">
+          {/* Footer FIXE */}
+          <DialogFooter className="mt-2 flex shrink-0 justify-end gap-2 bg-background pt-3">
             <Button
               type="button"
               variant="outline"
@@ -544,11 +968,15 @@ export function PropositionFormDialog({
             >
               Annuler
             </Button>
-            <Button type="submit" disabled={submitting}>
+            <Button
+              type="submit"
+              form="proposition-form"
+              disabled={submitting}
+            >
               {submitting ? "Création..." : "Créer"}
             </Button>
           </DialogFooter>
-        </form>
+        </div>
       </DialogContent>
     </Dialog>
   );
