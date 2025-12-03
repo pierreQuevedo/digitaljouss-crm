@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import {
   type ColumnDef,
@@ -84,6 +86,7 @@ type ClientRow = {
   contact_principal_email: string | null;
   notes_internes: string | null;
   created_at: string;
+  slug: string | null;
 };
 
 // helper pour les initiales
@@ -99,9 +102,11 @@ function getInitials(name: string | null | undefined) {
 const multiColumnFilterFn = (
   row: Row<ClientRow>,
   _columnId: string,
-  filterValue: unknown,
+  filterValue: unknown
 ) => {
-  const search = String(filterValue ?? "").toLowerCase().trim();
+  const search = String(filterValue ?? "")
+    .toLowerCase()
+    .trim();
   if (!search) return true;
 
   const content = [
@@ -164,8 +169,9 @@ export function ClientsTable({
         contact_principal_prenom,
         contact_principal_email,
         notes_internes,
-        created_at
-      `,
+        created_at,
+        slug
+      `
       )
       .eq("statut_client", initialStatut)
       .order("nom_affichage", { ascending: true });
@@ -195,7 +201,7 @@ export function ClientsTable({
       prev
         .map((c) => (c.id === id ? { ...c, statut_client: value } : c))
         // on enlève la ligne si elle ne correspond plus au filtre courant
-        .filter((c) => c.statut_client === initialStatut),
+        .filter((c) => c.statut_client === initialStatut)
     );
 
     const { error } = await supabase
@@ -230,9 +236,7 @@ export function ClientsTable({
             {client.logo_url && (
               <AvatarImage src={client.logo_url} alt={client.nom_affichage} />
             )}
-            <AvatarFallback className="text-xs">
-              {initials}
-            </AvatarFallback>
+            <AvatarFallback className="text-xs">{initials}</AvatarFallback>
           </Avatar>
         );
       },
@@ -252,9 +256,25 @@ export function ClientsTable({
           .filter(Boolean)
           .join(" ");
 
+        const href = client.slug
+          ? `/dashboard/clients/${client.slug}`
+          : undefined;
+
         return (
           <div className="flex flex-col">
-            <span className="font-medium">{client.nom_affichage}</span>
+            {href ? (
+              <Link
+                href={href}
+                className="font-medium text-sm hover:underline hover:text-blue-600"
+              >
+                {client.nom_affichage}
+              </Link>
+            ) : (
+              <span className="font-medium text-sm">
+                {client.nom_affichage}
+              </span>
+            )}
+
             {client.nom_legal && client.nom_legal !== client.nom_affichage && (
               <span className="text-xs text-muted-foreground">
                 {client.nom_legal}
@@ -278,11 +298,7 @@ export function ClientsTable({
       cell: ({ row }) => {
         const email = row.original.email_general;
         if (!email) {
-          return (
-            <span className="text-xs text-muted-foreground">
-              —
-            </span>
-          );
+          return <span className="text-xs text-muted-foreground">—</span>;
         }
         return (
           <a
@@ -301,11 +317,7 @@ export function ClientsTable({
       cell: ({ row }) => {
         const url = row.original.site_web_principal;
         if (!url) {
-          return (
-            <span className="text-xs text-muted-foreground">
-              —
-            </span>
-          );
+          return <span className="text-xs text-muted-foreground">—</span>;
         }
         const display = url.replace(/^https?:\/\//, "");
         return (
@@ -361,31 +373,18 @@ export function ClientsTable({
       cell: ({ row }) => {
         const notes = (row.original.notes_internes ?? "").trim();
         if (!notes) {
-          return (
-            <span className="text-xs text-muted-foreground">
-              —
-            </span>
-          );
+          return <span className="text-xs text-muted-foreground">—</span>;
         }
         const short =
           notes.length > 80 ? `${notes.slice(0, 77).trim()}…` : notes;
-        return (
-          <span className="text-xs text-muted-foreground">
-            {short}
-          </span>
-        );
+        return <span className="text-xs text-muted-foreground">{short}</span>;
       },
       size: 220,
     },
     {
       id: "actions",
       header: "",
-      cell: ({ row }) => (
-        <RowActions
-          row={row}
-          onUpdated={fetchClients}
-        />
-      ),
+      cell: ({ row }) => <RowActions row={row} onUpdated={fetchClients} />,
       size: 60,
       enableSorting: false,
       enableHiding: false,
@@ -502,7 +501,7 @@ export function ClientsTable({
 
                   const headerContent = flexRender(
                     header.column.columnDef.header,
-                    header.getContext(),
+                    header.getContext()
                   );
 
                   return (
@@ -551,7 +550,7 @@ export function ClientsTable({
                     <TableCell key={cell.id} className="align-middle">
                       {flexRender(
                         cell.column.columnDef.cell,
-                        cell.getContext(),
+                        cell.getContext()
                       )}
                     </TableCell>
                   ))}
@@ -604,7 +603,7 @@ export function ClientsTable({
               ? "0–0"
               : `${pagination.pageIndex * pagination.pageSize + 1}–${Math.min(
                   (pagination.pageIndex + 1) * pagination.pageSize,
-                  data.length,
+                  data.length
                 )}`}{" "}
             sur {data.length}
           </span>
@@ -667,6 +666,7 @@ function RowActions({
   onUpdated: () => void;
 }) {
   const supabase = createClient();
+  const router = useRouter();
   const client = row.original;
 
   const [openEdit, setOpenEdit] = useState(false);
@@ -721,7 +721,15 @@ function RowActions({
         <DropdownMenuContent align="end">
           <DropdownMenuLabel>Actions</DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => setOpenEdit(true)}>
+          <DropdownMenuItem
+            onClick={() => {
+              if (client.slug) {
+                router.push(`/dashboard/clients/${client.slug}`);
+              } else {
+                setOpenEdit(true);
+              }
+            }}
+          >
             Modifier
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -738,9 +746,9 @@ function RowActions({
       <ClientFormDialog
         open={openEdit}
         onOpenChange={setOpenEdit}
-        client={client}                    // 🔥 ici : on passe le client → mode edit
+        client={client} // 🔥 ici : on passe le client → mode edit
         defaultStatut={client.statut_client}
-        onSaved={onUpdated}                // pour refetch la table après save
+        onSaved={onUpdated} // pour refetch la table après save
       />
 
       {/* Dialog suppression */}

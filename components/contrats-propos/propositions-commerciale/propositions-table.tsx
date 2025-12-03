@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   type ColumnDef,
@@ -24,7 +18,11 @@ import {
 } from "@tanstack/react-table";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 import {
   Command,
@@ -212,6 +210,8 @@ type PropositionRow = {
   montant_ht_mensuel: number | null;
   devise: string | null;
 
+  date_prevue_facturation_recurrente: string | null;
+
   notes_internes: string | null;
   date_prevue_envoi: string | null;
   date_envoi: string | null;
@@ -261,6 +261,7 @@ type DbPropositionRow = {
     | DbServiceCategoryFromJoin
     | DbServiceCategoryFromJoin[]
     | null;
+  date_prevue_facturation_recurrente: string | null;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -281,7 +282,7 @@ function computeEtatFromStatut(statut: StatutProposition): EtatProposition {
 const multiColumnFilterFn: FilterFn<PropositionRow> = (
   row,
   _columnId,
-  filterValue,
+  filterValue
 ) => {
   const search = String(filterValue ?? "")
     .toLowerCase()
@@ -450,12 +451,13 @@ export function PropositionsTable({
         devise,
         notes_internes,
         date_prevue_envoi,
-        date_envoi,
-        date_acceptation,
-        date_refus,
-        url_envoi,
-        service_category_id,
-        created_at,
+  date_envoi,
+  date_acceptation,
+  date_refus,
+  url_envoi,
+  service_category_id,
+  created_at,
+  date_prevue_facturation_recurrente,
         clients:client_id (
           nom_affichage,
           nom_legal
@@ -465,7 +467,7 @@ export function PropositionsTable({
           slug,
           label
         )
-      `,
+      `
       )
       .order("created_at", { ascending: false });
 
@@ -501,7 +503,7 @@ export function PropositionsTable({
         : row.clients;
 
       const catJoined: DbServiceCategoryFromJoin | null = Array.isArray(
-        row.service_category,
+        row.service_category
       )
         ? row.service_category[0] ?? null
         : row.service_category;
@@ -537,6 +539,9 @@ export function PropositionsTable({
         montant_ht_mensuel: montantHtMensuel,
         devise: row.devise,
 
+        date_prevue_facturation_recurrente:
+          row.date_prevue_facturation_recurrente,
+
         notes_internes: row.notes_internes,
         date_prevue_envoi: row.date_prevue_envoi,
         date_envoi: row.date_envoi,
@@ -566,44 +571,113 @@ export function PropositionsTable({
   async function handleChangeStatut(id: string, newStatut: StatutProposition) {
     const old = data.find((p) => p.id === id);
     if (!old) return;
-
+  
     const newEtat = computeEtatFromStatut(newStatut);
-
+  
     // update optimiste côté UI
     setData((prev) => {
       const updated = prev.map((p) =>
         p.id === id ? { ...p, statut: newStatut, etat: newEtat } : p,
       );
-
+  
       if (effectiveEtatFilter === "all") return updated;
       return updated.filter((p) => p.etat === effectiveEtatFilter);
     });
-
+  
+    // ✅ plus de "any" ici
+    const updatePayload: {
+      statut: StatutProposition;
+      date_acceptation?: string;
+    } = { statut: newStatut };
+  
+    // si on passe à "acceptee" et qu'on n'a pas encore de date_acceptation
+    if (newStatut === "acceptee" && !old.date_acceptation) {
+      updatePayload.date_acceptation = new Date().toISOString();
+    }
+  
     const { error } = await supabase
       .from("propositions")
-      .update({ statut: newStatut })
+      .update(updatePayload)
       .eq("id", id);
-
+  
     if (error) {
       console.error(error);
       toast.error("Erreur lors de la mise à jour du statut", {
         description: error.message,
       });
-      // rollback : refetch
-      fetchPropositions();
+      await fetchPropositions();
       return;
     }
-
-    // on refetch pour récupérer les colonnes calculées / triggers (dates, etat…)
+  
+    if (newStatut === "acceptee") {
+      await createContratFromProposition(old);
+    }
+  
     await fetchPropositions();
-
+  
     toast.success("Statut mis à jour", {
       description: `${old.titre || "Proposition"} → ${
         STATUT_LABEL[newStatut]
       }`,
     });
-
+  
     onAnyChange?.();
+  }
+
+  async function createContratFromProposition(p: PropositionRow) {
+    const supabase = createClient();
+  
+    // 1) éviter les doublons : si un contrat existe déjà pour cette prop, on ne fait rien
+    const { data: existing, error: existingError } = await supabase
+      .from("contrats")
+      .select("id")
+      .eq("proposition_id", p.id)
+      .maybeSingle();
+  
+    if (existingError) {
+      console.error(existingError);
+    }
+  
+    if (existing) {
+      // il y a déjà un contrat, on ne recrée pas
+      return;
+    }
+  
+    const nowIso = new Date().toISOString();
+  
+    // 2) Construction du contrat à partir de la proposition
+    const { error } = await supabase.from("contrats").insert({
+      proposition_id: p.id,
+      client_id: p.client_id,
+      titre: p.titre,
+      description: p.notes_internes,
+      statut: "en_cours", // ou "signe" selon ta logique métier
+      montant_ht: p.montant_ht,
+      montant_ht_one_shot: p.montant_ht_one_shot,
+      montant_ht_mensuel: p.montant_ht_mensuel,
+      tva_rate: null,
+      montant_ttc: null,
+      devise: p.devise ?? "EUR",
+      billing_model: p.billing_model,
+      // On suppose le récurrent mensuel pour l’instant
+      billing_period: "monthly",
+      date_debut: p.date_acceptation ?? nowIso,
+      date_fin_prevue: null, // à définir plus tard si engagement
+      nb_mois_engagement: null,
+      reference_externe: null,
+      created_at: nowIso,
+      date_signature: p.date_acceptation ?? nowIso,
+    });
+  
+    if (error) {
+      console.error(error);
+      toast.error("Erreur lors de la création automatique du contrat", {
+        description: error.message,
+      });
+      return;
+    }
+  
+    toast.success("Contrat créé à partir de la proposition acceptée");
   }
 
   /* -------------------------------------------------------------------------- */
@@ -622,9 +696,7 @@ export function PropositionsTable({
               {p.titre || "Sans titre"}
             </span>
             <span className="text-xs text-muted-foreground">
-              {p.client_nom_affichage ||
-                p.client_nom_legal ||
-                "Client inconnu"}
+              {p.client_nom_affichage || p.client_nom_legal || "Client inconnu"}
             </span>
           </div>
         );
@@ -650,13 +722,13 @@ export function PropositionsTable({
           <span
             className={cn(
               "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]",
-              getCategoryBadgeClasses(slug),
+              getCategoryBadgeClasses(slug)
             )}
           >
             <span
               className={cn(
                 "inline-block h-1.5 w-1.5 rounded-full",
-                getCategoryDotClasses(slug),
+                getCategoryDotClasses(slug)
               )}
             />
             <span>{label}</span>
@@ -686,9 +758,7 @@ export function PropositionsTable({
               <SelectItem value="en_attente_retour">
                 {STATUT_LABEL.en_attente_retour}
               </SelectItem>
-              <SelectItem value="acceptee">
-                {STATUT_LABEL.acceptee}
-              </SelectItem>
+              <SelectItem value="acceptee">{STATUT_LABEL.acceptee}</SelectItem>
               <SelectItem value="refusee">{STATUT_LABEL.refusee}</SelectItem>
             </SelectContent>
           </Select>
@@ -763,8 +833,7 @@ export function PropositionsTable({
           billing_model === "mixed" &&
           (montant_ht_one_shot != null || montant_ht_mensuel != null)
         ) {
-          const total =
-            (montant_ht_one_shot ?? 0) + (montant_ht_mensuel ?? 0);
+          const total = (montant_ht_one_shot ?? 0) + (montant_ht_mensuel ?? 0);
           return (
             <div className="flex flex-col text-xs">
               <span>
@@ -973,9 +1042,7 @@ export function PropositionsTable({
               <>
                 <SelectItem value="all">Tous les statuts</SelectItem>
                 <SelectItem value="a_faire">{STATUT_LABEL.a_faire}</SelectItem>
-                <SelectItem value="envoyee">
-                  {STATUT_LABEL.envoyee}
-                </SelectItem>
+                <SelectItem value="envoyee">{STATUT_LABEL.envoyee}</SelectItem>
                 <SelectItem value="en_attente_retour">
                   {STATUT_LABEL.en_attente_retour}
                 </SelectItem>
@@ -988,9 +1055,7 @@ export function PropositionsTable({
                 <SelectItem value="acceptee">
                   {STATUT_LABEL.acceptee}
                 </SelectItem>
-                <SelectItem value="refusee">
-                  {STATUT_LABEL.refusee}
-                </SelectItem>
+                <SelectItem value="refusee">{STATUT_LABEL.refusee}</SelectItem>
               </>
             )}
 
@@ -998,18 +1063,14 @@ export function PropositionsTable({
               <>
                 <SelectItem value="all">Tous les statuts</SelectItem>
                 <SelectItem value="a_faire">{STATUT_LABEL.a_faire}</SelectItem>
-                <SelectItem value="envoyee">
-                  {STATUT_LABEL.envoyee}
-                </SelectItem>
+                <SelectItem value="envoyee">{STATUT_LABEL.envoyee}</SelectItem>
                 <SelectItem value="en_attente_retour">
                   {STATUT_LABEL.en_attente_retour}
                 </SelectItem>
                 <SelectItem value="acceptee">
                   {STATUT_LABEL.acceptee}
                 </SelectItem>
-                <SelectItem value="refusee">
-                  {STATUT_LABEL.refusee}
-                </SelectItem>
+                <SelectItem value="refusee">{STATUT_LABEL.refusee}</SelectItem>
               </>
             )}
           </SelectContent>
@@ -1071,7 +1132,7 @@ export function PropositionsTable({
 
                   const headerContent = flexRender(
                     header.column.columnDef.header,
-                    header.getContext(),
+                    header.getContext()
                   );
 
                   return (
@@ -1120,7 +1181,7 @@ export function PropositionsTable({
                     <TableCell key={cell.id} className="align-middle">
                       {flexRender(
                         cell.column.columnDef.cell,
-                        cell.getContext(),
+                        cell.getContext()
                       )}
                     </TableCell>
                   ))}
@@ -1247,22 +1308,22 @@ function RowActions({
 
   // statut
   const [statutValue, setStatutValue] = useState<StatutProposition>(
-    proposition.statut,
+    proposition.statut
   );
 
   // modèle de facturation + montants
   const [billingModel, setBillingModel] = useState<BillingModel>(
-    proposition.billing_model ?? "one_shot",
+    proposition.billing_model ?? "one_shot"
   );
   const [montantOneShot, setMontantOneShot] = useState<string>(
     proposition.montant_ht_one_shot != null
       ? String(proposition.montant_ht_one_shot)
-      : "",
+      : ""
   );
   const [montantMensuel, setMontantMensuel] = useState<string>(
     proposition.montant_ht_mensuel != null
       ? String(proposition.montant_ht_mensuel)
-      : "",
+      : ""
   );
 
   // services
@@ -1281,12 +1342,12 @@ function RowActions({
     setMontantOneShot(
       proposition.montant_ht_one_shot != null
         ? String(proposition.montant_ht_one_shot)
-        : "",
+        : ""
     );
     setMontantMensuel(
       proposition.montant_ht_mensuel != null
         ? String(proposition.montant_ht_mensuel)
-        : "",
+        : ""
     );
 
     // fetch services + services déjà liés à cette proposition
@@ -1323,7 +1384,7 @@ function RowActions({
                 : typeof s.default_unit_price === "number"
                 ? s.default_unit_price
                 : Number(s.default_unit_price),
-          })),
+          }))
         );
       }
 
@@ -1331,11 +1392,11 @@ function RowActions({
         console.error(linksRes.error);
         toast.error(
           "Erreur lors du chargement des services associés à la proposition",
-          { description: linksRes.error.message },
+          { description: linksRes.error.message }
         );
       } else if (linksRes.data) {
         const linkedIds = (linksRes.data as { service_id: string }[]).map(
-          (r) => r.service_id,
+          (r) => r.service_id
         );
         setSelectedServiceIds(linkedIds);
       }
@@ -1344,14 +1405,23 @@ function RowActions({
     };
 
     void fetchServicesAndLinks();
-  }, [openEdit, supabase, proposition.id, proposition.service_category_id, proposition.statut, proposition.billing_model, proposition.montant_ht_one_shot, proposition.montant_ht_mensuel]);
+  }, [
+    openEdit,
+    supabase,
+    proposition.id,
+    proposition.service_category_id,
+    proposition.statut,
+    proposition.billing_model,
+    proposition.montant_ht_one_shot,
+    proposition.montant_ht_mensuel,
+  ]);
 
   const selectedCategory = useMemo(
     () =>
       selectedCategoryId
         ? categories.find((c) => c.id === selectedCategoryId) ?? null
         : null,
-    [selectedCategoryId, categories],
+    [selectedCategoryId, categories]
   );
 
   // modèles autorisés en fonction de la catégorie
@@ -1422,6 +1492,12 @@ function RowActions({
 
     const montant_ht_one_shot = parseNumber(montantOneShot);
     const montant_ht_mensuel = parseNumber(montantMensuel);
+
+
+    const date_prevue_facturation_recurrente =
+      (
+        (formData.get("date_prevue_facturation_recurrente") as string) || ""
+      ).trim() || null;
 
     const montant_ht: number | null = (() => {
       if (billingModel === "one_shot") return montant_ht_one_shot;
@@ -1495,6 +1571,7 @@ function RowActions({
           montant_ht,
           montant_ht_one_shot,
           montant_ht_mensuel,
+          date_prevue_facturation_recurrente,
         })
         .eq("id", proposition.id);
 
@@ -1517,7 +1594,7 @@ function RowActions({
         console.error(deleteError);
         toast.error(
           "Proposition mise à jour, mais erreur lors de la mise à jour des services",
-          { description: deleteError.message },
+          { description: deleteError.message }
         );
       } else if (selectedServiceIds.length > 0) {
         const rows = selectedServiceIds.map((serviceId) => ({
@@ -1533,7 +1610,7 @@ function RowActions({
           console.error(linkError);
           toast.error(
             "Proposition mise à jour, mais erreur lors de l'association des services",
-            { description: linkError.message },
+            { description: linkError.message }
           );
         }
       }
@@ -1632,13 +1709,13 @@ function RowActions({
                           <span
                             className={cn(
                               "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs",
-                              getCategoryBadgeClasses(selectedCategory.slug),
+                              getCategoryBadgeClasses(selectedCategory.slug)
                             )}
                           >
                             <span
                               className={cn(
                                 "inline-block h-1.5 w-1.5 rounded-full",
-                                getCategoryDotClasses(selectedCategory.slug),
+                                getCategoryDotClasses(selectedCategory.slug)
                               )}
                             />
                             <span>{selectedCategory.label}</span>
@@ -1652,13 +1729,13 @@ function RowActions({
                           <span
                             className={cn(
                               "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]",
-                              getCategoryBadgeClasses(cat.slug),
+                              getCategoryBadgeClasses(cat.slug)
                             )}
                           >
                             <span
                               className={cn(
                                 "inline-block h-1.5 w-1.5 rounded-full",
-                                getCategoryDotClasses(cat.slug),
+                                getCategoryDotClasses(cat.slug)
                               )}
                             />
                             <span>{cat.label}</span>
@@ -1713,8 +1790,9 @@ function RowActions({
                           </CommandEmpty>
                           <CommandGroup heading="Services">
                             {availableServices.map((s) => {
-                              const isSelected =
-                                selectedServiceIds.includes(s.id);
+                              const isSelected = selectedServiceIds.includes(
+                                s.id
+                              );
                               return (
                                 <CommandItem
                                   key={s.id}
@@ -1723,7 +1801,7 @@ function RowActions({
                                     setSelectedServiceIds((prev) =>
                                       isSelected
                                         ? prev.filter((id) => id !== s.id)
-                                        : [...prev, s.id],
+                                        : [...prev, s.id]
                                     );
                                   }}
                                 >
@@ -1867,6 +1945,31 @@ function RowActions({
                         id={`devise_${proposition.id}`}
                         name="devise"
                         defaultValue={proposition.devise ?? "EUR"}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {billingModel === "mixed" && (
+                  <div className="grid gap-3">
+                    <div className="grid gap-1.5">
+                      <Label
+                        htmlFor={`date_prevue_facturation_recurrente_${proposition.id}`}
+                      >
+                        Début prévu facturation récurrente
+                      </Label>
+                      <Input
+                        id={`date_prevue_facturation_recurrente_${proposition.id}`}
+                        name="date_prevue_facturation_recurrente"
+                        type="date"
+                        defaultValue={
+                          proposition.date_prevue_facturation_recurrente
+                            ? proposition.date_prevue_facturation_recurrente.slice(
+                                0,
+                                10
+                              )
+                            : ""
+                        }
                       />
                     </div>
                   </div>

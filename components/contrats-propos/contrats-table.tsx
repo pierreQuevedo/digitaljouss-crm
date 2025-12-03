@@ -15,21 +15,28 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+
+import {
+  canStartRecurringBilling,
+  type BillingModel,
+  type StatutContrat,
+} from "@/lib/contrats-domain";
+import { DownloadIcon } from "lucide-react";
+import { ContratDocumentUploader } from "@/components/contrats-propos/contrat-document-uploader";
+
 const supabase = createClient();
 
 /* -------------------------------------------------------------------------- */
 /*                                   Types                                    */
 /* -------------------------------------------------------------------------- */
-
-export type StatutContrat =
-  | "brouillon"
-  | "en_attente_signature"
-  | "signe"
-  | "en_cours"
-  | "termine"
-  | "annule";
-
-export type BillingModel = "one_shot" | "recurring" | "mixed";
 
 export type BillingPeriod = "one_time" | "monthly" | "quarterly" | "yearly";
 
@@ -65,14 +72,26 @@ export type ContratRow = {
   created_at: string;
   date_signature: string | null;
 
+  // temporalité facturation
+  date_facturation_one_shot: string | null;
+  date_debut_facturation_recurrente: string | null;
+
   client_nom_affichage: string | null;
   client_nom_legal: string | null;
 
   proposition_titre: string | null;
 
+  // lien docs de la proposition
+  proposition_url_envoi: string | null;
+
   service_category: ServiceCategory | null;
   service_category_slug: string | null;
   service_category_label: string | null;
+
+  // docs contrat
+  devis_pdf_path: string | null;
+  devis_signe_pdf_path: string | null;
+  facture_pdf_path: string | null;
 };
 
 type DbClientFromJoin = {
@@ -88,6 +107,7 @@ type DbServiceCategoryFromJoin = {
 
 type DbPropositionFromJoin = {
   titre: string | null;
+  url_envoi: string | null;
   service_category:
     | DbServiceCategoryFromJoin
     | DbServiceCategoryFromJoin[]
@@ -119,6 +139,13 @@ type DbContratRow = {
 
   created_at: string;
   date_signature: string | null;
+
+  date_facturation_one_shot: string | null;
+  date_debut_facturation_recurrente: string | null;
+
+  devis_pdf_path: string | null;
+  devis_signe_pdf_path: string | null;
+  facture_pdf_path: string | null;
 
   client: DbClientFromJoin | DbClientFromJoin[] | null;
   proposition: DbPropositionFromJoin | DbPropositionFromJoin[] | null;
@@ -256,10 +283,10 @@ export function ContratsTable({
 
   const [searchValue, setSearchValue] = useState("");
   const [statutFilter, setStatutFilter] = useState<StatutContrat | "all">(
-    initialStatutFilter,
+    initialStatutFilter
   );
   const [categoryFilter, setCategoryFilter] = useState<string | "all">(
-    initialCategoryFilter,
+    initialCategoryFilter
   );
   const [billingModelFilter, setBillingModelFilter] = useState<
     BillingModel | "all"
@@ -276,24 +303,24 @@ export function ContratsTable({
     { value: "strategie-digitale", label: "Stratégie digitale" },
   ];
 
-  // clés stables pour les useEffect (évite les JSON.stringify dégueu)
+  // clés stables pour les useEffect (évite JSON.stringify dans le tableau de deps)
   const statutInKey = useMemo(
     () => (statutIn && statutIn.length > 0 ? statutIn.join("|") : ""),
-    [statutIn],
+    [statutIn]
   );
   const billingModelInKey = useMemo(
     () =>
       billingModelIn && billingModelIn.length > 0
         ? billingModelIn.join("|")
         : "",
-    [billingModelIn],
+    [billingModelIn]
   );
   const billingPeriodInKey = useMemo(
     () =>
       billingPeriodIn && billingPeriodIn.length > 0
         ? billingPeriodIn.join("|")
         : "",
-    [billingPeriodIn],
+    [billingPeriodIn]
   );
 
   /* ------------------------------ fetch contrats ----------------------------- */
@@ -327,6 +354,12 @@ export function ContratsTable({
             reference_externe,
             created_at,
             date_signature,
+            date_facturation_one_shot,
+            date_debut_facturation_recurrente,
+
+            devis_pdf_path,
+            devis_signe_pdf_path,
+            facture_pdf_path,
 
             client:client_id (
               nom_affichage,
@@ -335,27 +368,38 @@ export function ContratsTable({
 
             proposition:proposition_id (
               titre,
+              url_envoi,
               service_category:service_category_id (
                 id,
                 slug,
                 label
               )
             )
-          `,
+          `
           )
           .order("created_at", { ascending: false });
 
-        // scope backend : filtres "durs"
-        if (statutIn && statutIn.length > 0) {
-          query = query.in("statut", statutIn);
+        // On reconstruit les tableaux à partir des keys
+        const statutValues: StatutContrat[] = statutInKey
+          ? (statutInKey.split("|") as StatutContrat[])
+          : [];
+        const billingModelValues: BillingModel[] = billingModelInKey
+          ? (billingModelInKey.split("|") as BillingModel[])
+          : [];
+        const billingPeriodValues: BillingPeriod[] = billingPeriodInKey
+          ? (billingPeriodInKey.split("|") as BillingPeriod[])
+          : [];
+
+        if (statutValues.length > 0) {
+          query = query.in("statut", statutValues);
         }
 
-        if (billingModelIn && billingModelIn.length > 0) {
-          query = query.in("billing_model", billingModelIn);
+        if (billingModelValues.length > 0) {
+          query = query.in("billing_model", billingModelValues);
         }
 
-        if (billingPeriodIn && billingPeriodIn.length > 0) {
-          query = query.in("billing_period", billingPeriodIn);
+        if (billingPeriodValues.length > 0) {
+          query = query.in("billing_period", billingPeriodValues);
         }
 
         if (clientId) {
@@ -388,13 +432,13 @@ export function ContratsTable({
 
         const mapped: ContratRow[] = raw.map((row) => {
           const clientJoined: DbClientFromJoin | null = Array.isArray(
-            row.client,
+            row.client
           )
             ? row.client[0] ?? null
             : row.client;
 
           const propositionJoined: DbPropositionFromJoin | null = Array.isArray(
-            row.proposition,
+            row.proposition
           )
             ? row.proposition[0] ?? null
             : row.proposition;
@@ -438,10 +482,16 @@ export function ContratsTable({
             created_at: row.created_at,
             date_signature: row.date_signature,
 
+            // temporalité facturation
+            date_facturation_one_shot: row.date_facturation_one_shot,
+            date_debut_facturation_recurrente:
+              row.date_debut_facturation_recurrente,
+
             client_nom_affichage: clientJoined?.nom_affichage ?? null,
             client_nom_legal: clientJoined?.nom_legal ?? null,
 
             proposition_titre: propositionJoined?.titre ?? null,
+            proposition_url_envoi: propositionJoined?.url_envoi ?? null,
 
             service_category: catJoined
               ? {
@@ -452,6 +502,10 @@ export function ContratsTable({
               : null,
             service_category_slug: catJoined?.slug ?? null,
             service_category_label: catJoined?.label ?? null,
+
+            devis_pdf_path: row.devis_pdf_path,
+            devis_signe_pdf_path: row.devis_signe_pdf_path,
+            facture_pdf_path: row.facture_pdf_path,
           };
         });
 
@@ -468,9 +522,6 @@ export function ContratsTable({
     statutInKey,
     billingModelInKey,
     billingPeriodInKey,
-    statutIn,
-    billingModelIn,
-    billingPeriodIn,
   ]);
 
   // dès qu’on change recherche / filtre / pageSize, on revient à la page 1
@@ -623,75 +674,82 @@ export function ContratsTable({
         </Select>
       </div>
 
-      {/* Table */}
+      {/* Table Shadcn */}
       <div className="overflow-hidden rounded-md border bg-card">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/40">
-            <tr>
-              <th className="px-3 py-2 text-left text-xs font-medium">
+        <Table>
+          <TableHeader className="bg-muted/40">
+            <TableRow>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
                 Contrat
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium">
+              </TableHead>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
                 Catégorie
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium">
+              </TableHead>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
                 Modèle
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium">
+              </TableHead>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
+                Facturation
+              </TableHead>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
                 Statut
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium">
-                Montant HT
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium">
-                Reste HT
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium">
-                Signature
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium">Début</th>
-              <th className="px-3 py-2 text-left text-xs font-medium">
-                Fin prévue
-              </th>
+              </TableHead>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
+                Montant
+              </TableHead>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
+                Reste
+              </TableHead>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
+                Propos
+              </TableHead>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
+                Devis
+              </TableHead>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
+                Devis signé
+              </TableHead>
+              <TableHead className="px-3 py-2 text-left text-xs font-medium">
+                Factures
+              </TableHead>
               {renderRowActions && (
-                <th className="px-3 py-2 text-right text-xs font-medium">
+                <TableHead className="px-3 py-2 text-right text-xs font-medium">
                   Actions
-                </th>
+                </TableHead>
               )}
-            </tr>
-          </thead>
-          <tbody>
+            </TableRow>
+          </TableHeader>
+
+          <TableBody>
             {loading ? (
-              <tr>
-                <td
-                  colSpan={renderRowActions ? 9 : 8}
+              <TableRow>
+                <TableCell
+                  colSpan={renderRowActions ? 12 : 11}
                   className="py-8 text-center text-sm text-muted-foreground"
                 >
                   Chargement des contrats...
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ) : pageData.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={renderRowActions ? 9 : 8}
+              <TableRow>
+                <TableCell
+                  colSpan={renderRowActions ? 12 : 11}
                   className="py-8 text-center text-sm text-muted-foreground"
                 >
                   Aucun contrat pour le moment.
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ) : (
               pageData.map((c) => {
                 const devise = c.devise ?? "EUR";
 
                 const totalPaidHt =
                   paidByContratHt && c.id in paidByContratHt
-                    ? paidByContratHt[c.id]
-                    : null;
+                    ? paidByContratHt[c.id] ?? 0
+                    : 0;
 
                 const resteHt =
-                  c.montant_ht != null && totalPaidHt != null
-                    ? c.montant_ht - totalPaidHt
-                    : null;
+                  c.montant_ht != null ? c.montant_ht - totalPaidHt : null;
 
                 const handleRowClick = () => {
                   if (onRowClick) {
@@ -707,18 +765,20 @@ export function ContratsTable({
                         maximumFractionDigits: 2,
                       });
 
+                const recurringReady = canStartRecurringBilling(c);
+
                 return (
-                  <tr
+                  <TableRow
                     key={c.id}
                     className={cn(
                       "border-t",
                       onRowClick &&
-                        "cursor-pointer hover:bg-muted/40 transition-colors",
+                        "cursor-pointer hover:bg-muted/40 transition-colors"
                     )}
                     onClick={handleRowClick}
                   >
                     {/* Contrat + client + proposition */}
-                    <td className="px-3 py-2 align-middle">
+                    <TableCell className="px-3 py-2 align-middle">
                       <div className="flex flex-col">
                         <span className="text-sm font-medium">
                           {c.titre || "Sans titre"}
@@ -739,21 +799,21 @@ export function ContratsTable({
                           </span>
                         )}
                       </div>
-                    </td>
+                    </TableCell>
 
                     {/* Catégorie */}
-                    <td className="px-3 py-2 align-middle">
+                    <TableCell className="px-3 py-2 align-middle">
                       {c.service_category_label ? (
                         <span
                           className={cn(
                             "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]",
-                            getCategoryBadgeClasses(c.service_category_slug),
+                            getCategoryBadgeClasses(c.service_category_slug)
                           )}
                         >
                           <span
                             className={cn(
                               "inline-block h-1.5 w-1.5 rounded-full",
-                              getCategoryDotClasses(c.service_category_slug),
+                              getCategoryDotClasses(c.service_category_slug)
                             )}
                           />
                           <span>{c.service_category_label}</span>
@@ -763,10 +823,10 @@ export function ContratsTable({
                           Non définie
                         </span>
                       )}
-                    </td>
+                    </TableCell>
 
                     {/* Modèle + périodicité */}
-                    <td className="px-3 py-2 align-middle text-xs">
+                    <TableCell className="px-3 py-2 align-middle text-xs">
                       <div className="flex flex-col gap-0.5">
                         <span className="font-medium">
                           {BILLING_MODEL_LABEL[c.billing_model]}
@@ -775,113 +835,325 @@ export function ContratsTable({
                           {BILLING_PERIOD_LABEL[c.billing_period]}
                         </span>
                       </div>
-                    </td>
+                    </TableCell>
 
-                    {/* Statut */}
-                    <td className="px-3 py-2 align-middle text-xs text-muted-foreground">
-                      {STATUT_LABEL[c.statut]}
-                    </td>
-
-                    {/* Montant HT */}
-                    <td className="px-3 py-2 align-middle text-xs">
-                      {c.billing_model === "one_shot" ? (
-                        <>
-                          {fmt(
-                            c.montant_ht_one_shot ?? c.montant_ht ?? null,
-                          )}{" "}
-                          {devise}
-                        </>
-                      ) : c.billing_model === "recurring" ? (
-                        <>
-                          {fmt(c.montant_ht_mensuel)} {devise} / mois
-                        </>
-                      ) : c.billing_model === "mixed" ? (
+                    {/* Facturation (dates & état) */}
+                    <TableCell className="px-3 py-2 align-middle text-xs">
+                      {c.billing_model === "one_shot" && (
                         <div className="flex flex-col">
-                          <span>
-                            One shot : {fmt(c.montant_ht_one_shot)} {devise}
-                          </span>
-                          <span>
-                            Mensuel : {fmt(c.montant_ht_mensuel)} {devise}
-                          </span>
-                          <span className="text-[11px] text-muted-foreground">
-                            Total estimé : {fmt(c.montant_ht)} {devise}
+                          <span className="font-medium">
+                            One shot le{" "}
+                            {c.date_facturation_one_shot
+                              ? new Date(
+                                  c.date_facturation_one_shot
+                                ).toLocaleDateString("fr-FR")
+                              : "—"}
                           </span>
                         </div>
+                      )}
+
+                      {c.billing_model === "recurring" && (
+                        <div className="flex flex-col">
+                          <span>
+                            Début récurrent :{" "}
+                            {c.date_debut_facturation_recurrente
+                              ? new Date(
+                                  c.date_debut_facturation_recurrente
+                                ).toLocaleDateString("fr-FR")
+                              : "—"}
+                          </span>
+                          <span className="text-[11px] text-muted-foreground">
+                            {recurringReady
+                              ? "OK pour lancer la facturation"
+                              : "Pas encore active"}
+                          </span>
+                        </div>
+                      )}
+
+                      {c.billing_model === "mixed" && (
+                        <div className="flex flex-col">
+                          <span>
+                            One shot :{" "}
+                            {c.date_facturation_one_shot
+                              ? new Date(
+                                  c.date_facturation_one_shot
+                                ).toLocaleDateString("fr-FR")
+                              : "—"}
+                          </span>
+                          <span>
+                            Récurrent :{" "}
+                            {c.date_debut_facturation_recurrente
+                              ? new Date(
+                                  c.date_debut_facturation_recurrente
+                                ).toLocaleDateString("fr-FR")
+                              : "—"}
+                          </span>
+                          <span className="text-[11px] text-muted-foreground">
+                            {recurringReady
+                              ? "Récurrent prêt à lancer"
+                              : "Récurrent en attente"}
+                          </span>
+                        </div>
+                      )}
+                    </TableCell>
+
+                    {/* Statut */}
+                    <TableCell className="px-3 py-2 align-middle text-xs text-muted-foreground">
+                      {STATUT_LABEL[c.statut]}
+                    </TableCell>
+
+                    {/* Montant : HT + TTC */}
+                    <TableCell className="px-3 py-2 align-middle text-xs">
+                      {c.billing_model === "one_shot" ? (
+                        (() => {
+                          const ht = c.montant_ht_one_shot ?? c.montant_ht;
+                          const rate = c.tva_rate ?? null;
+                          const ttc =
+                            ht != null && rate != null
+                              ? ht * (1 + rate / 100)
+                              : null;
+
+                          if (ht == null) {
+                            return (
+                              <span className="text-muted-foreground">—</span>
+                            );
+                          }
+
+                          return (
+                            <div className="flex flex-col">
+                              <span>
+                                {fmt(ht)} {devise} HT
+                              </span>
+                              {ttc != null && (
+                                <span className="text-[11px] text-muted-foreground">
+                                  {fmt(ttc)} {devise} TTC
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()
+                      ) : c.billing_model === "recurring" ? (
+                        (() => {
+                          const ht = c.montant_ht_mensuel;
+                          const rate = c.tva_rate ?? null;
+                          const ttc =
+                            ht != null && rate != null
+                              ? ht * (1 + rate / 100)
+                              : null;
+
+                          if (ht == null) {
+                            return (
+                              <span className="text-muted-foreground">—</span>
+                            );
+                          }
+
+                          return (
+                            <div className="flex flex-col">
+                              <span>
+                                {fmt(ht)} {devise} HT / mois
+                              </span>
+                              {ttc != null && (
+                                <span className="text-[11px] text-muted-foreground">
+                                  {fmt(ttc)} {devise} TTC / mois
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()
+                      ) : c.billing_model === "mixed" ? (
+                        (() => {
+                          const oneShotHt = c.montant_ht_one_shot;
+                          const mensuelHt = c.montant_ht_mensuel;
+                          const totalHt = c.montant_ht;
+                          const rate = c.tva_rate ?? null;
+
+                          const oneShotTtc =
+                            oneShotHt != null && rate != null
+                              ? oneShotHt * (1 + rate / 100)
+                              : null;
+                          const mensuelTtc =
+                            mensuelHt != null && rate != null
+                              ? mensuelHt * (1 + rate / 100)
+                              : null;
+
+                          if (
+                            oneShotHt == null &&
+                            mensuelHt == null &&
+                            totalHt == null
+                          ) {
+                            return (
+                              <span className="text-muted-foreground">—</span>
+                            );
+                          }
+
+                          return (
+                            <div className="flex flex-col gap-0.5">
+                              {oneShotHt != null && (
+                                <span className="flex items-center gap-2">
+                                  One shot :
+                                  <span className="flex flex-col">
+                                    {fmt(oneShotHt)} {devise} HT
+                                    {oneShotTtc != null && (
+                                      <span className="text-[11px] text-muted-foreground">
+                                        {fmt(oneShotTtc)} {devise} TTC
+                                      </span>
+                                    )}
+                                  </span>
+                                </span>
+                              )}
+                              {mensuelHt != null && (
+                                <span className="flex items-center gap-2">
+                                  Mensuel :
+                                  <span className="flex flex-col">
+                                    {fmt(mensuelHt)} HT
+                                    {mensuelTtc != null && (
+                                      <span className="text-[11px] text-muted-foreground">
+                                        {fmt(mensuelTtc)} TTC
+                                      </span>
+                                    )}
+                                  </span>
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()
                       ) : c.montant_ht == null ? (
                         <span className="text-muted-foreground">—</span>
                       ) : (
-                        <>
-                          {fmt(c.montant_ht)} {devise}
-                        </>
-                      )}
-                    </td>
+                        (() => {
+                          const ht = c.montant_ht;
+                          const rate = c.tva_rate ?? null;
+                          const ttc =
+                            ht != null && rate != null
+                              ? ht * (1 + rate / 100)
+                              : null;
 
-                    {/* Reste HT */}
-                    <td className="px-3 py-2 align-middle text-xs">
+                          return (
+                            <div className="flex flex-col">
+                              <span>{fmt(ht)} HT</span>
+                              {ttc != null && (
+                                <span className="text-[11px] text-muted-foreground">
+                                  {fmt(ttc)} TTC
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()
+                      )}
+                    </TableCell>
+
+                    {/* Reste : HT + TTC */}
+                    <TableCell className="px-3 py-2 align-middle text-xs">
                       {resteHt == null ? (
                         <span className="text-muted-foreground">—</span>
                       ) : (
-                        <span
-                          className={cn(
-                            "font-semibold",
-                            resteHt > 0
-                              ? "text-amber-700"
-                              : resteHt < 0
-                              ? "text-emerald-700"
-                              : "text-slate-700",
-                          )}
+                        (() => {
+                          const rate = c.tva_rate ?? null;
+                          const resteTtc =
+                            rate != null ? resteHt * (1 + rate / 100) : null;
+
+                          return (
+                            <div className="flex flex-col">
+                              <span
+                                className={cn(
+                                  "font-semibold",
+                                  resteHt > 0
+                                    ? "text-amber-700"
+                                    : resteHt < 0
+                                    ? "text-emerald-700"
+                                    : "text-slate-700"
+                                )}
+                              >
+                                {fmt(resteHt)} HT
+                              </span>
+                              {resteTtc != null && (
+                                <span className="text-[11px] text-muted-foreground">
+                                  {fmt(resteTtc)} TTC
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()
+                      )}
+                    </TableCell>
+
+                    {/* Propos */}
+                    <TableCell
+                      className="px-3 py-2 align-middle"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {c.proposition_url_envoi ? (
+                        <Button
+                          asChild
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8"
                         >
-                          {resteHt.toLocaleString("fr-FR", {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })}{" "}
-                          {devise}
-                        </span>
-                      )}
-                    </td>
-
-                    {/* Signature */}
-                    <td className="px-3 py-2 align-middle text-xs">
-                      {c.date_signature ? (
-                        new Date(c.date_signature).toLocaleDateString("fr-FR")
+                          <a
+                            href={c.proposition_url_envoi}
+                            target="_blank"
+                            rel="noreferrer"
+                            aria-label="Ouvrir les documents de la proposition"
+                          >
+                            <DownloadIcon className="h-4 w-4" />
+                          </a>
+                        </Button>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <span className="text-xs text-muted-foreground">—</span>
                       )}
-                    </td>
+                    </TableCell>
 
-                    {/* Début */}
-                    <td className="px-3 py-2 align-middle text-xs">
-                      {c.date_debut ? (
-                        new Date(c.date_debut).toLocaleDateString("fr-FR")
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </td>
+                    {/* Devis */}
+                    <TableCell
+                      className="px-3 py-2 align-middle"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <ContratDocumentUploader
+                        contratId={c.id}
+                        docType="devis"
+                        existingPath={c.devis_pdf_path}
+                      />
+                    </TableCell>
 
-                    {/* Fin prévue */}
-                    <td className="px-3 py-2 align-middle text-xs">
-                      {c.date_fin_prevue ? (
-                        new Date(c.date_fin_prevue).toLocaleDateString("fr-FR")
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </td>
+                    {/* Devis signé */}
+                    <TableCell
+                      className="px-3 py-2 align-middle"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <ContratDocumentUploader
+                        contratId={c.id}
+                        docType="devis_signe"
+                        existingPath={c.devis_signe_pdf_path}
+                      />
+                    </TableCell>
+
+                    {/* Factures */}
+                    <TableCell
+                      className="px-3 py-2 align-middle"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <ContratDocumentUploader
+                        contratId={c.id}
+                        docType="facture"
+                        existingPath={c.facture_pdf_path}
+                      />
+                    </TableCell>
 
                     {/* Actions */}
                     {renderRowActions && (
-                      <td
+                      <TableCell
                         className="px-3 py-2 align-middle text-right"
                         onClick={(e) => e.stopPropagation()}
                       >
                         {renderRowActions(c)}
-                      </td>
+                      </TableCell>
                     )}
-                  </tr>
+                  </TableRow>
                 );
               })
             )}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
 
       {/* Pagination */}
@@ -913,7 +1185,7 @@ export function ContratsTable({
               ? "0–0"
               : `${pageIndex * pageSize + 1}–${Math.min(
                   (pageIndex + 1) * pageSize,
-                  totalFiltered,
+                  totalFiltered
                 )}`}{" "}
             sur {totalFiltered}
           </span>
@@ -943,7 +1215,7 @@ export function ContratsTable({
               className="h-8 w-8"
               onClick={() =>
                 setPageIndex((prev) =>
-                  (prev + 1) * pageSize >= totalFiltered ? prev : prev + 1,
+                  (prev + 1) * pageSize >= totalFiltered ? prev : prev + 1
                 )
               }
               disabled={(pageIndex + 1) * pageSize >= totalFiltered}
@@ -956,7 +1228,7 @@ export function ContratsTable({
               className="h-8 w-8"
               onClick={() =>
                 setPageIndex(
-                  Math.max(Math.ceil(totalFiltered / pageSize) - 1, 0),
+                  Math.max(Math.ceil(totalFiltered / pageSize) - 1, 0)
                 )
               }
               disabled={(pageIndex + 1) * pageSize >= totalFiltered}

@@ -19,7 +19,11 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Command,
   CommandEmpty,
@@ -190,9 +194,9 @@ export function PropositionFormDialog({
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
 
   // catégorie
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string | undefined>(
-    undefined,
-  );
+  const [selectedCategoryId, setSelectedCategoryId] = useState<
+    string | undefined
+  >(undefined);
 
   // statut
   const [statutValue, setStatutValue] = useState<StatutProposition>("a_faire");
@@ -244,7 +248,7 @@ export function PropositionFormDialog({
           typed.map((c) => ({
             id: c.id,
             nom_affichage: c.nom_affichage,
-          })),
+          }))
         );
       }
 
@@ -261,7 +265,7 @@ export function PropositionFormDialog({
             id: c.id,
             slug: c.slug,
             label: c.label,
-          })),
+          }))
         );
       }
 
@@ -284,7 +288,7 @@ export function PropositionFormDialog({
                 : typeof s.default_unit_price === "number"
                 ? s.default_unit_price
                 : Number(s.default_unit_price),
-          })),
+          }))
         );
       }
 
@@ -310,7 +314,7 @@ export function PropositionFormDialog({
       selectedCategoryId
         ? categories.find((c) => c.id === selectedCategoryId) ?? null
         : null,
-    [selectedCategoryId, categories],
+    [selectedCategoryId, categories]
   );
 
   /* ---------------------- billing models autorisés / défaut -------------------- */
@@ -374,8 +378,11 @@ export function PropositionFormDialog({
     const client_id = (formData.get("client_id") as string) || null;
     const titre = ((formData.get("titre") as string) || "").trim();
 
-    const devise =
-      ((formData.get("devise") as string) || "").trim() || "EUR";
+    const date_prevue_facturation_recurrente =
+      (
+        (formData.get("date_prevue_facturation_recurrente") as string) || ""
+      ).trim() || null;
+    const devise = ((formData.get("devise") as string) || "").trim() || "EUR";
 
     const date_prevue_envoi =
       ((formData.get("date_prevue_envoi") as string) || "").trim() || null;
@@ -472,6 +479,7 @@ export function PropositionFormDialog({
           montant_ht,
           montant_ht_one_shot,
           montant_ht_mensuel,
+          date_prevue_facturation_recurrente,
         })
         .select("id")
         .single();
@@ -503,7 +511,7 @@ export function PropositionFormDialog({
             "Proposition créée, mais erreur lors de l'association des services",
             {
               description: linkError.message,
-            },
+            }
           );
         }
       }
@@ -664,12 +672,12 @@ export function PropositionFormDialog({
                       {selectedCategory ? (
                         <div
                           className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-xs ${getCategoryBadgeClasses(
-                            selectedCategory.slug,
+                            selectedCategory.slug
                           )}`}
                         >
                           <span
                             className={`inline-block h-1.5 w-1.5 rounded-full ${getCategoryDotClasses(
-                              selectedCategory.slug,
+                              selectedCategory.slug
                             )}`}
                           />
                           <span>{selectedCategory.label}</span>
@@ -682,12 +690,12 @@ export function PropositionFormDialog({
                       <SelectItem key={cat.id} value={cat.id}>
                         <div
                           className={`inline-flex items-center gap-2 rounded-full border px-2 py-0.5 text-[11px] ${getCategoryBadgeClasses(
-                            cat.slug,
+                            cat.slug
                           )}`}
                         >
                           <span
                             className={`inline-block h-1.5 w-1.5 rounded-full ${getCategoryDotClasses(
-                              cat.slug,
+                              cat.slug
                             )}`}
                           />
                           <span>{cat.label}</span>
@@ -747,8 +755,9 @@ export function PropositionFormDialog({
                         </CommandEmpty>
                         <CommandGroup heading="Services">
                           {availableServices.map((s) => {
-                            const isSelected =
-                              selectedServiceIds.includes(s.id);
+                            const isSelected = selectedServiceIds.includes(
+                              s.id
+                            );
                             return (
                               <CommandItem
                                 key={s.id}
@@ -757,7 +766,7 @@ export function PropositionFormDialog({
                                   setSelectedServiceIds((prev) =>
                                     isSelected
                                       ? prev.filter((id) => id !== s.id)
-                                      : [...prev, s.id],
+                                      : [...prev, s.id]
                                   );
                                 }}
                               >
@@ -839,9 +848,7 @@ export function PropositionFormDialog({
               {billingModel === "recurring" && (
                 <div className="grid grid-cols-3 gap-3">
                   <div className="col-span-2 grid gap-1.5">
-                    <Label htmlFor="montant_mensuel">
-                      Montant HT mensuel
-                    </Label>
+                    <Label htmlFor="montant_mensuel">Montant HT mensuel</Label>
                     <Input
                       id="montant_mensuel"
                       inputMode="decimal"
@@ -892,11 +899,28 @@ export function PropositionFormDialog({
                 </div>
               )}
 
+              {billingModel === "mixed" && (
+                <div className="grid gap-3">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="date_prevue_facturation_recurrente">
+                      Début prévu facturation récurrente
+                    </Label>
+                    <Input
+                      id="date_prevue_facturation_recurrente"
+                      name="date_prevue_facturation_recurrente"
+                      type="date"
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      Optionnel. Le récurrent ne sera considéré comme “lancé”
+                      qu&apos;à partir de cette date.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* Date prévue d’envoi */}
               <div className="grid gap-1.5">
-                <Label htmlFor="date_prevue_envoi">
-                  Date prévue d’envoi
-                </Label>
+                <Label htmlFor="date_prevue_envoi">Date prévue d’envoi</Label>
                 <Input
                   id="date_prevue_envoi"
                   name="date_prevue_envoi"
@@ -906,9 +930,7 @@ export function PropositionFormDialog({
 
               {/* Lien docs envoyés */}
               <div className="grid gap-1.5">
-                <Label htmlFor="url_envoi">
-                  Lien des documents envoyés
-                </Label>
+                <Label htmlFor="url_envoi">Lien des documents envoyés</Label>
                 <Input
                   id="url_envoi"
                   name="url_envoi"
@@ -916,8 +938,8 @@ export function PropositionFormDialog({
                   placeholder="https://wetransfer.com/..."
                 />
                 <p className="text-[11px] text-muted-foreground">
-                  Ajoute ici le lien WeTransfer / Drive des documents envoyés
-                  au client (optionnel).
+                  Ajoute ici le lien WeTransfer / Drive des documents envoyés au
+                  client (optionnel).
                 </p>
               </div>
 
@@ -968,11 +990,7 @@ export function PropositionFormDialog({
             >
               Annuler
             </Button>
-            <Button
-              type="submit"
-              form="proposition-form"
-              disabled={submitting}
-            >
+            <Button type="submit" form="proposition-form" disabled={submitting}>
               {submitting ? "Création..." : "Créer"}
             </Button>
           </DialogFooter>

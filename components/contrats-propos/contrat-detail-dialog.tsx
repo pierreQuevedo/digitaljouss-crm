@@ -1,11 +1,10 @@
-// components/contrats-propos/contrat-detail-dialog.tsx
-
 "use client";
 
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 
 import type { ContratRow } from "@/components/contrats-propos/contrats-table";
+import { canStartRecurringBilling } from "@/lib/contrats-domain";
 
 import {
   Dialog,
@@ -61,6 +60,19 @@ const STATUT_LABEL: Record<ContratRow["statut"], string> = {
   annule: "Annulé",
 };
 
+const BILLING_MODEL_LABEL: Record<ContratRow["billing_model"], string> = {
+  one_shot: "One shot",
+  recurring: "Récurrent",
+  mixed: "Mixte",
+};
+
+const BILLING_PERIOD_LABEL: Record<ContratRow["billing_period"], string> = {
+  one_time: "Ponctuel",
+  monthly: "Mensuel",
+  quarterly: "Trimestriel",
+  yearly: "Annuel",
+};
+
 // mêmes helpers que dans le tableau
 const CATEGORY_COLORS: Record<string, { badge: string; dot: string }> = {
   "strategie-digitale": {
@@ -114,8 +126,19 @@ export function ContratDetailDialog({
 }: ContratDetailDialogProps) {
   const [paymentsListOpen, setPaymentsListOpen] = useState(false);
 
+  // Montants principaux (on accepte que contrat soit null)
   const montantHt = contrat?.montant_ht ?? null;
   const tvaRate = contrat?.tva_rate ?? null;
+  const oneShotHt = contrat?.montant_ht_one_shot ?? null;
+  const recurringHt = contrat?.montant_ht_mensuel ?? null;
+
+  // Labels de facturation avec fallback
+  const billingModelLabel = contrat
+    ? BILLING_MODEL_LABEL[contrat.billing_model]
+    : BILLING_MODEL_LABEL["one_shot"];
+  const billingPeriodLabel = contrat
+    ? BILLING_PERIOD_LABEL[contrat.billing_period]
+    : BILLING_PERIOD_LABEL["one_time"];
 
   const montantTtc = useMemo(() => {
     if (montantHt == null) return null;
@@ -135,6 +158,18 @@ export function ContratDetailDialog({
 
   const devise = contrat?.devise ?? "EUR";
 
+  const createdAt = contrat
+    ? new Date(contrat.created_at).toLocaleDateString("fr-FR")
+    : null;
+  const signedAt =
+    contrat && contrat.date_signature
+      ? new Date(contrat.date_signature).toLocaleDateString("fr-FR")
+      : null;
+
+  const hasPayments = payments.length > 0;
+  const recurringReady = contrat ? canStartRecurringBilling(contrat) : false;
+
+  // 🔁 On met l'early return APRÈS les hooks → plus d’erreur eslint
   if (!contrat) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -149,13 +184,6 @@ export function ContratDetailDialog({
       </Dialog>
     );
   }
-
-  const createdAt = new Date(contrat.created_at).toLocaleDateString("fr-FR");
-  const signedAt = contrat.date_signature
-    ? new Date(contrat.date_signature).toLocaleDateString("fr-FR")
-    : null;
-
-  const hasPayments = payments.length > 0;
 
   return (
     <>
@@ -199,9 +227,11 @@ export function ContratDetailDialog({
                   </span>
                 )}
 
-                <span className="text-[11px] text-muted-foreground">
-                  Créé le {createdAt}
-                </span>
+                {createdAt && (
+                  <span className="text-[11px] text-muted-foreground">
+                    Créé le {createdAt}
+                  </span>
+                )}
                 {signedAt && (
                   <span className="text-[11px] text-muted-foreground">
                     Signé le {signedAt}
@@ -211,8 +241,7 @@ export function ContratDetailDialog({
             </DialogTitle>
 
             <DialogDescription className="text-xs">
-              Vue détaillée du contrat, des montants et des paiements
-              éventuels.
+              Vue détaillée du contrat, des montants et des paiements éventuels.
             </DialogDescription>
           </DialogHeader>
 
@@ -234,47 +263,188 @@ export function ContratDetailDialog({
               <div className="space-y-1.5 rounded-md border bg-muted/40 p-3">
                 <p className="font-medium text-sm">Montants & facturation</p>
 
+                {/* Modèle + périodicité */}
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center justify_between gap-2">
                     <span className="text-xs text-muted-foreground">
-                      Montant HT
+                      Modèle
                     </span>
                     <span className="text-xs font-medium">
-                      {montantHt == null
-                        ? "—"
-                        : `${montantHt.toLocaleString("fr-FR", {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })} ${devise}`}
+                      {billingModelLabel}
                     </span>
                   </div>
 
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs text-muted-foreground">
-                      TVA (%)
+                      Périodicité
                     </span>
-                    <span className="text-xs">
-                      {tvaRate == null
-                        ? "—"
-                        : `${tvaRate.toLocaleString("fr-FR", {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })} %`}
-                    </span>
+                    <span className="text-xs">{billingPeriodLabel}</span>
                   </div>
+                </div>
 
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs text-muted-foreground">
-                      Montant TTC
-                    </span>
-                    <span className="text-xs font-medium">
-                      {montantTtc == null
-                        ? "—"
-                        : `${montantTtc.toLocaleString("fr-FR", {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })} ${devise}`}
-                    </span>
+                {/* Temporalité facturation */}
+                <div className="mt-2 space-y-1">
+                  {/* One shot */}
+                  {contrat.billing_model !== "recurring" && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        Facturation one shot
+                      </span>
+                      <span className="text-xs">
+                        {contrat.date_facturation_one_shot
+                          ? new Date(
+                              contrat.date_facturation_one_shot,
+                            ).toLocaleDateString("fr-FR")
+                          : "Non planifiée"}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Récurrent */}
+                  {contrat.billing_model !== "one_shot" && (
+                    <>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          Début facturation récurrente
+                        </span>
+                        <span className="text-xs">
+                          {contrat.date_debut_facturation_recurrente
+                            ? new Date(
+                                contrat.date_debut_facturation_recurrente,
+                              ).toLocaleDateString("fr-FR")
+                            : "Non planifiée"}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          État du récurrent
+                        </span>
+                        <span
+                          className={cn(
+                            "text-[11px] font-medium",
+                            recurringReady
+                              ? "text-emerald-700"
+                              : "text-amber-700",
+                          )}
+                        >
+                          {recurringReady
+                            ? "OK pour lancer la facturation"
+                            : "En attente (non lancé)"}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Détail one shot / mensuel */}
+                <div className="mt-2 space-y-1">
+                  {contrat.billing_model === "one_shot" && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        Montant one shot HT
+                      </span>
+                      <span className="text-xs font-medium">
+                        {oneShotHt == null
+                          ? "—"
+                          : `${oneShotHt.toLocaleString("fr-FR", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })} ${devise}`}
+                      </span>
+                    </div>
+                  )}
+
+                  {contrat.billing_model === "recurring" && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        Mensuel HT
+                      </span>
+                      <span className="text-xs font-medium">
+                        {recurringHt == null
+                          ? "—"
+                          : `${recurringHt.toLocaleString("fr-FR", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })} ${devise} / mois`}
+                      </span>
+                    </div>
+                  )}
+
+                  {contrat.billing_model === "mixed" && (
+                    <>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          One shot HT
+                        </span>
+                        <span className="text-xs font-medium">
+                          {oneShotHt == null
+                            ? "—"
+                            : `${oneShotHt.toLocaleString("fr-FR", {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })} ${devise}`}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          Mensuel HT
+                        </span>
+                        <span className="text-xs font-medium">
+                          {recurringHt == null
+                            ? "—"
+                            : `${recurringHt.toLocaleString("fr-FR", {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })} ${devise} / mois`}
+                        </span>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Total / TVA / TTC comme synthèse */}
+                  <div className="mt-2 border-t pt-2 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        Montant total HT (engagement)
+                      </span>
+                      <span className="text-xs font-medium">
+                        {montantHt == null
+                          ? "—"
+                          : `${montantHt.toLocaleString("fr-FR", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })} ${devise}`}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        TVA (%)
+                      </span>
+                      <span className="text-xs">
+                        {tvaRate == null
+                          ? "—"
+                          : `${tvaRate.toLocaleString("fr-FR", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })} %`}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        Montant TTC
+                      </span>
+                      <span className="text-xs font-medium">
+                        {montantTtc == null
+                          ? "—"
+                          : `${montantTtc.toLocaleString("fr-FR", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })} ${devise}`}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -345,7 +515,7 @@ export function ContratDetailDialog({
                   </div>
 
                   {/* Reste à charge TTC */}
-                  <div className="flex items-center justify_between gap-2">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-xs text-muted-foreground">
                       Reste à charge TTC
                     </span>
@@ -410,9 +580,7 @@ export function ContratDetailDialog({
       <Dialog open={paymentsListOpen} onOpenChange={setPaymentsListOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle className="text-sm">
-              Paiements du contrat
-            </DialogTitle>
+            <DialogTitle className="text-sm">Paiements du contrat</DialogTitle>
             <DialogDescription className="text-xs">
               Historique des paiements enregistrés pour ce contrat.
             </DialogDescription>
@@ -433,9 +601,7 @@ export function ContratDetailDialog({
                   {payments.map((p) => (
                     <tr key={p.id} className="border-b last:border-0">
                       <td className="px-2 py-1 align-top">
-                        {new Date(p.date_paiement).toLocaleDateString(
-                          "fr-FR",
-                        )}
+                        {new Date(p.date_paiement).toLocaleDateString("fr-FR")}
                       </td>
                       <td className="px-2 py-1 align-top text-right">
                         {p.montant_ht == null

@@ -52,28 +52,51 @@ const supabase = createClient();
 type ContratPaiementRow = {
   id: string;
   contrat_id: string;
-  montant_ht: string | null; // numeric => string
+  montant_ht: string | null;
   montant_ttc: string | null;
-  date_paiement: string; // date
+  date_paiement: string;
   mode_paiement: string | null;
   note: string | null;
   commentaire: string | null;
+};
+
+type ContratTarifMensuelRow = {
+  id: string;
+  contrat_id: string;
+  date_debut: string; // 'YYYY-MM-DD'
+  date_fin: string | null; // null = tarif actuel
+  montant_ht_mensuel: string; // numeric => string
 };
 
 type ContratRow = {
   id: string;
   client_id: string;
   titre: string;
-  statut: string; // contrat_statut_enum
-  montant_ht: string; // numeric => string
+  statut: string;
+
+  montant_ht: string;
   montant_ttc: string | null;
   tva_rate: number | null;
   devise: string;
+
+  billing_model: "one_shot" | "recurrent" | "mixte";
+  billing_period: "one_time" | "monthly";
+
   date_signature: string | null;
+  date_debut: string | null;
+  date_fin_prevue: string | null;
+  nb_mois_engagement: number | null;
+
+  montant_ht_one_shot: string | null;
+  montant_ht_mensuel: string | null;
+
   devis_pdf_path: string | null;
   devis_signe_pdf_path: string | null;
   facture_pdf_path: string | null;
+
   contrat_paiements: ContratPaiementRow[];
+
+  contrat_tarifs_mensuels: ContratTarifMensuelRow[];
 };
 
 type ClientFacturationTabProps = {
@@ -81,11 +104,6 @@ type ClientFacturationTabProps = {
 };
 
 type StatutFilter = "all" | "brouillon" | "signe" | "other";
-
-function getTvaRate(raw: number | string | null | undefined): number {
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : 20; // fallback à 20%
-}
 
 /* -------------------------------------------------------------------------- */
 /*                              COMPOSANT PRINCIPAL                           */
@@ -105,29 +123,43 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
         .from("contrats")
         .select(
           `
-          id,
-          client_id,
-          titre,
-          statut,
-          montant_ht,
-          montant_ttc,
-          tva_rate,
-          devise,
-          date_signature,
-          devis_pdf_path,
-          devis_signe_pdf_path,
-          facture_pdf_path,
-          contrat_paiements (
-            id,
-            contrat_id,
-            montant_ht,
-            montant_ttc,
-            date_paiement,
-            mode_paiement,
-            note,
-            commentaire
-          )
-        `
+    id,
+    client_id,
+    titre,
+    statut,
+    montant_ht,
+    montant_ttc,
+    tva_rate,
+    devise,
+    billing_model,
+    billing_period,
+    date_signature,
+    date_debut,
+    date_fin_prevue,
+    nb_mois_engagement,
+    montant_ht_one_shot,
+    montant_ht_mensuel,
+    devis_pdf_path,
+    devis_signe_pdf_path,
+    facture_pdf_path,
+    contrat_paiements (
+      id,
+      contrat_id,
+      montant_ht,
+      montant_ttc,
+      date_paiement,
+      mode_paiement,
+      note,
+      commentaire
+    ),
+    contrat_tarifs_mensuels (
+      id,
+      contrat_id,
+      date_debut,
+      date_fin,
+      montant_ht_mensuel
+    )
+  `
         )
         .eq("client_id", clientId)
         .order("date_signature", { ascending: false });
@@ -173,24 +205,8 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
       }
 
       if (onlyWithResteDu) {
-        const tva = getTvaRate(contrat.tva_rate);
-        const contratHt = Number(contrat.montant_ht || 0);
-        const contratTtc =
-          contrat.montant_ttc != null
-            ? Number(contrat.montant_ttc)
-            : contratHt * (1 + tva / 100);
-
-        const totalPaiementsTtc = (contrat.contrat_paiements || []).reduce(
-          (sum, p) =>
-            sum +
-            (p.montant_ttc != null
-              ? Number(p.montant_ttc)
-              : Number(p.montant_ht || 0)),
-          0
-        );
-
-        const resteTtc = contratTtc - totalPaiementsTtc;
-        if (resteTtc <= 0.01) return false;
+        const snap = computeContratFacturation(contrat);
+        if (snap.resteDuTtc <= 0.01) return false;
       }
 
       return true;
@@ -202,51 +218,76 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
   /* ---------------------------------------------------------------------- */
 
   const {
-    totalContratsTtc,
-    totalContratsHt,
+    totalEngagementTtc,
+    totalEngagementHt,
     totalEncaisseTtc,
     totalEncaisseHt,
     totalResteTtc,
     totalResteHt,
+    totalRecurringMensuelTtc,
+    totalRecurringMensuelHt,
+    totalNextMonthMensuelTtc,
+    totalNextMonthMensuelHt,
   } = useMemo(() => {
-    let contratsTtc = 0;
-    let contratsHt = 0;
-    let encaisseTtc = 0;
-    let encaisseHt = 0;
+    let engTtc = 0;
+    let engHt = 0;
+    let encTtc = 0;
+    let encHt = 0;
+    let resteTtc = 0;
+    let resteHt = 0;
+
+    let recurringMensuelHt = 0;
+    let recurringMensuelTtc = 0;
+
+    let nextMonthMensuelHt = 0;
+    let nextMonthMensuelTtc = 0;
+
+    const today = new Date();
+    const currentMonthStart = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      1
+    );
+    const nextMonthStart = addMonths(currentMonthStart, 1);
 
     for (const contrat of filteredContrats) {
-      const tva = getTvaRate(contrat.tva_rate);
-      const ht = Number(contrat.montant_ht || 0);
-      const ttc =
-        contrat.montant_ttc != null
-          ? Number(contrat.montant_ttc)
-          : ht * (1 + tva / 100);
+      const snap = computeContratFacturation(contrat);
 
-      contratsHt += ht;
-      contratsTtc += ttc;
+      engHt += snap.engagementTotalHt;
+      engTtc += snap.engagementTotalTtc;
+      encHt += snap.paidHt;
+      encTtc += snap.paidTtc;
+      resteHt += snap.resteDuHt;
+      resteTtc += snap.resteDuTtc;
 
-      const paiements = contrat.contrat_paiements || [];
-      for (const p of paiements) {
-        const pTtcRaw =
-          p.montant_ttc != null
-            ? Number(p.montant_ttc)
-            : Number(p.montant_ht || 0);
-        const pHtRaw = p.montant_ht != null ? Number(p.montant_ht) : 0;
-        const pHt =
-          pHtRaw > 0 ? pHtRaw : pTtcRaw / (1 + tva / 100);
+      // 🔹 Mensuel du mois en cours
+      const currentMensuel = getContratMensuelPourMois(
+        contrat,
+        currentMonthStart
+      );
+      recurringMensuelHt += currentMensuel.ht;
+      recurringMensuelTtc += currentMensuel.ttc;
 
-        encaisseTtc += pTtcRaw;
-        encaisseHt += pHt;
-      }
+      // 🔹 Mensuel du mois prochain (prévisionnel)
+      const nextMensuel = getContratMensuelPourMois(
+        contrat,
+        nextMonthStart
+      );
+      nextMonthMensuelHt += nextMensuel.ht;
+      nextMonthMensuelTtc += nextMensuel.ttc;
     }
 
     return {
-      totalContratsTtc: contratsTtc,
-      totalContratsHt: contratsHt,
-      totalEncaisseTtc: encaisseTtc,
-      totalEncaisseHt: encaisseHt,
-      totalResteTtc: contratsTtc - encaisseTtc,
-      totalResteHt: contratsHt - encaisseHt,
+      totalEngagementTtc: engTtc,
+      totalEngagementHt: engHt,
+      totalEncaisseTtc: encTtc,
+      totalEncaisseHt: encHt,
+      totalResteTtc: resteTtc,
+      totalResteHt: resteHt,
+      totalRecurringMensuelTtc: recurringMensuelTtc,
+      totalRecurringMensuelHt: recurringMensuelHt,
+      totalNextMonthMensuelTtc: nextMonthMensuelTtc,
+      totalNextMonthMensuelHt: nextMonthMensuelHt,
     };
   }, [filteredContrats]);
 
@@ -309,16 +350,17 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
             checked={onlyWithResteDu}
             onChange={(e) => setOnlyWithResteDu(e.target.checked)}
           />
-          <span>Uniquement les contrats avec reste dû</span>
+          <span>Uniquement les contrats avec reste dû (à date)</span>
         </label>
       </div>
 
       {/* Synthèse */}
-      <div className="grid gap-4 md:grid-cols-3">
+            {/* Synthèse */}
+            <div className="grid gap-4 md:grid-cols-5">
         <SummaryCard
-          label="Total contrats signés"
-          ttc={totalContratsTtc}
-          ht={totalContratsHt}
+          label="Total contrats signés (engagement)"
+          ttc={totalEngagementTtc}
+          ht={totalEngagementHt}
           devise={devise}
         />
         <SummaryCard
@@ -328,11 +370,23 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
           devise={devise}
         />
         <SummaryCard
-          label="Reste dû"
+          label="Reste dû à date"
           ttc={totalResteTtc}
           ht={totalResteHt}
           devise={devise}
           highlight={totalResteTtc > 0}
+        />
+        <SummaryCard
+          label="Récurrent mensuel (mois en cours)"
+          ttc={totalRecurringMensuelTtc}
+          ht={totalRecurringMensuelHt}
+          devise={devise}
+        />
+        <SummaryCard
+          label="Reste à facturer mois prochain (récurrent)"
+          ttc={totalNextMonthMensuelTtc}
+          ht={totalNextMonthMensuelHt}
+          devise={devise}
         />
       </div>
 
@@ -359,10 +413,10 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
                   <TableHead>Contrat</TableHead>
                   <TableHead>Statut</TableHead>
                   <TableHead className="text-right">
-                    Montant contrat
+                    Engagement contrat
                   </TableHead>
                   <TableHead className="text-right">Payé</TableHead>
-                  <TableHead className="text-right">Reste dû</TableHead>
+                  <TableHead className="text-right">Reste dû à date</TableHead>
                   <TableHead>Devis</TableHead>
                   <TableHead>Devis signé</TableHead>
                   <TableHead>Facture</TableHead>
@@ -405,35 +459,18 @@ function ContratRowItem({
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
+  const snapshot = computeContratFacturation(contrat);
+  const {
+    engagementTotalHt,
+    engagementTotalTtc,
+    paidHt,
+    paidTtc,
+    resteDuHt,
+    resteDuTtc,
+  } = snapshot;
+
   const paiements = contrat.contrat_paiements || [];
   const tva = getTvaRate(contrat.tva_rate);
-
-  const montantContratHt = Number(contrat.montant_ht || 0);
-  const montantContratTtc =
-    contrat.montant_ttc != null
-      ? Number(contrat.montant_ttc)
-      : montantContratHt * (1 + tva / 100);
-
-  const totalPaiementsTtc = paiements.reduce((sum, p) => {
-    const pTtcRaw =
-      p.montant_ttc != null
-        ? Number(p.montant_ttc)
-        : Number(p.montant_ht || 0);
-    return sum + pTtcRaw;
-  }, 0);
-
-  const totalPaiementsHt = paiements.reduce((sum, p) => {
-    const pTtcRaw =
-      p.montant_ttc != null
-        ? Number(p.montant_ttc)
-        : Number(p.montant_ht || 0);
-    const pHtRaw = p.montant_ht != null ? Number(p.montant_ht) : 0;
-    const pHt = pHtRaw > 0 ? pHtRaw : pTtcRaw / (1 + tva / 100);
-    return sum + pHt;
-  }, 0);
-
-  const resteTtc = montantContratTtc - totalPaiementsTtc;
-  const resteHt = montantContratHt - totalPaiementsHt;
 
   return (
     <>
@@ -449,29 +486,30 @@ function ContratRowItem({
           <ContratStatusBadge statut={contrat.statut} />
         </TableCell>
 
+        {/* Montant contrat = engagement total */}
         <TableCell className="align-middle text-right">
           <div>
-            {formatMontant(montantContratTtc, devise)}{" "}
+            {formatMontant(engagementTotalTtc, devise)}{" "}
             <span className="text-xs text-muted-foreground">TTC</span>
           </div>
-          {montantContratHt > 0 && (
+          {engagementTotalHt > 0 && (
             <div className="text-xs text-muted-foreground">
-              {formatMontant(montantContratHt, devise)} HT
+              {formatMontant(engagementTotalHt, devise)} HT
             </div>
           )}
         </TableCell>
 
-        {/* PAYÉ = TTC + HT + œil à côté */}
+        {/* PAYÉ = snapshot payé TTC + HT + œil à côté */}
         <TableCell className="align-middle text-right">
           <div className="flex items-center justify-end gap-2">
             <div className="text-right">
               <div>
-                {formatMontant(totalPaiementsTtc, devise)}{" "}
+                {formatMontant(paidTtc, devise)}{" "}
                 <span className="text-xs text-muted-foreground">TTC</span>
               </div>
-              {totalPaiementsHt > 0 && (
+              {paidHt > 0 && (
                 <div className="text-xs text-muted-foreground">
-                  {formatMontant(totalPaiementsHt, devise)} HT
+                  {formatMontant(paidHt, devise)} HT
                 </div>
               )}
             </div>
@@ -488,14 +526,15 @@ function ContratRowItem({
           </div>
         </TableCell>
 
+        {/* Reste dû à date */}
         <TableCell className="align-middle text-right">
           <div>
-            {formatMontant(resteTtc, devise)}{" "}
+            {formatMontant(resteDuTtc, devise)}{" "}
             <span className="text-xs text-muted-foreground">TTC</span>
           </div>
-          {Math.abs(resteHt) > 0.01 && (
+          {Math.abs(resteDuHt) > 0.01 && (
             <div className="text-xs text-muted-foreground">
-              {formatMontant(resteHt, devise)} HT
+              {formatMontant(resteDuHt, devise)} HT
             </div>
           )}
         </TableCell>
@@ -578,7 +617,11 @@ type PaiementsSubTableProps = {
   tvaRate: number;
 };
 
-function PaiementsSubTable({ paiements, devise, tvaRate }: PaiementsSubTableProps) {
+function PaiementsSubTable({
+  paiements,
+  devise,
+  tvaRate,
+}: PaiementsSubTableProps) {
   return (
     <div className="overflow-x-auto">
       <Table className="text-xs">
@@ -653,32 +696,18 @@ function ContratDetailsDialog({
   const paiements = contrat.contrat_paiements || [];
   const tva = getTvaRate(contrat.tva_rate);
 
-  const montantContratHt = Number(contrat.montant_ht || 0);
-  const montantContratTtc =
-    contrat.montant_ttc != null
-      ? Number(contrat.montant_ttc)
-      : montantContratHt * (1 + tva / 100);
-
-  const totalPaiementsTtc = paiements.reduce((sum, p) => {
-    const pTtcRaw =
-      p.montant_ttc != null
-        ? Number(p.montant_ttc)
-        : Number(p.montant_ht || 0);
-    return sum + pTtcRaw;
-  }, 0);
-
-  const totalPaiementsHt = paiements.reduce((sum, p) => {
-    const pTtcRaw =
-      p.montant_ttc != null
-        ? Number(p.montant_ttc)
-        : Number(p.montant_ht || 0);
-    const pHtRaw = p.montant_ht != null ? Number(p.montant_ht) : 0;
-    const pHt = pHtRaw > 0 ? pHtRaw : pTtcRaw / (1 + tva / 100);
-    return sum + pHt;
-  }, 0);
-
-  const resteTtc = montantContratTtc - totalPaiementsTtc;
-  const resteHt = montantContratHt - totalPaiementsHt;
+  const snapshot = computeContratFacturation(contrat);
+  const {
+    engagementTotalHt,
+    engagementTotalTtc,
+    paidHt,
+    paidTtc,
+    resteDuHt,
+    resteDuTtc,
+    nbMoisTotal,
+    nbMoisEcoules,
+    engagementFuturTtc,
+  } = snapshot;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -693,32 +722,44 @@ function ContratDetailsDialog({
         <div className="space-y-4 py-2">
           <div>
             <p className="text-sm font-medium">{contrat.titre}</p>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground flex items-center gap-1">
               Statut : <ContratStatusBadge statut={contrat.statut} />
             </p>
+            {contrat.billing_model !== "one_shot" && nbMoisTotal > 0 && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Récurent : {nbMoisEcoules}/{nbMoisTotal} mois “accrus” à date
+              </p>
+            )}
           </div>
 
           <div className="grid gap-3 md:grid-cols-3">
             <SummaryCard
-              label="Montant contrat"
-              ttc={montantContratTtc}
-              ht={montantContratHt}
+              label="Engagement contrat"
+              ttc={engagementTotalTtc}
+              ht={engagementTotalHt}
               devise={devise}
             />
             <SummaryCard
               label="Total payé"
-              ttc={totalPaiementsTtc}
-              ht={totalPaiementsHt}
+              ttc={paidTtc}
+              ht={paidHt}
               devise={devise}
             />
             <SummaryCard
-              label="Reste dû"
-              ttc={resteTtc}
-              ht={resteHt}
+              label="Reste dû à date"
+              ttc={resteDuTtc}
+              ht={resteDuHt}
               devise={devise}
-              highlight={resteTtc > 0}
+              highlight={resteDuTtc > 0}
             />
           </div>
+
+          {engagementFuturTtc > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              Engagement futur (non encore exigible) :{" "}
+              {formatMontant(engagementFuturTtc, devise)} TTC
+            </p>
+          )}
 
           <div className="space-y-2">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -922,6 +963,358 @@ function AddPaiementDialog({
     </Dialog>
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/*                    LOGIQUE DE CALCUL FACTURATION CONTRAT                   */
+/* -------------------------------------------------------------------------- */
+
+type ContratFacturationSnapshot = {
+  nbMoisTotal: number;
+  nbMoisEcoules: number;
+
+  engagementTotalHt: number;
+  engagementTotalTtc: number;
+
+  duHt: number;
+  duTtc: number;
+
+  paidHt: number;
+  paidTtc: number;
+
+  resteDuHt: number;
+  resteDuTtc: number;
+
+  engagementFuturHt: number;
+  engagementFuturTtc: number;
+};
+
+function parseNumber(value: string | number | null | undefined): number {
+  if (value == null) return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const n = Number(String(value).replace(",", "."));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function safeDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// diff en mois “pleins” entre 2 dates (en se plaçant au 1er du mois)
+function diffInMonths(start: Date, end: Date): number {
+  const years = end.getFullYear() - start.getFullYear();
+  const months = end.getMonth() - start.getMonth();
+  return years * 12 + months;
+}
+
+function addMonths(date: Date, months: number): Date {
+  const d = new Date(date);
+  d.setMonth(d.getMonth() + months);
+  return d;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getTvaRate(raw: number | string | null | undefined): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 20; // fallback 20%
+}
+
+type TarifPeriod = {
+  start: Date;
+  end: Date | null;
+  montantHt: number;
+};
+
+function buildTarifPeriods(contrat: ContratRow): TarifPeriod[] {
+  const periods: TarifPeriod[] = [];
+
+  // 1) Périodes venant de contrat_tarifs_mensuels
+  for (const t of contrat.contrat_tarifs_mensuels || []) {
+    const start = safeDate(t.date_debut);
+    if (!start) continue;
+    const end = safeDate(t.date_fin);
+    const montantHt = parseNumber(t.montant_ht_mensuel);
+    if (montantHt <= 0) continue;
+
+    periods.push({ start, end, montantHt });
+  }
+
+  // 2) Si aucune période mais un montant_ht_mensuel sur le contrat => fallback
+  if (periods.length === 0) {
+    const fallbackMensuel = parseNumber(contrat.montant_ht_mensuel);
+    if (fallbackMensuel > 0) {
+      const startRaw = contrat.date_debut ?? contrat.date_signature ?? null;
+      const start = safeDate(startRaw) ?? new Date();
+      periods.push({
+        start,
+        end: null,
+        montantHt: fallbackMensuel,
+      });
+    }
+  }
+
+  // tri par date_debut
+  periods.sort((a, b) => a.start.getTime() - b.start.getTime());
+  return periods;
+}
+
+function findMensuelHtForMonth(
+  monthDate: Date,
+  periods: TarifPeriod[],
+  fallbackMensuel: number
+): number {
+  // On cherche la dernière période dont start <= monthDate <= end (ou end null)
+  for (let i = periods.length - 1; i >= 0; i--) {
+    const p = periods[i];
+    if (p.start <= monthDate && (!p.end || p.end >= monthDate)) {
+      return p.montantHt;
+    }
+  }
+  return fallbackMensuel > 0 ? fallbackMensuel : 0;
+}
+
+/**
+ * Calcul des métriques de facturation pour un contrat à une date de référence.
+ * - gère les périodes tarifaires mensuelles (400€ -> 700€ en cours de route)
+ * - gère one_shot / recurrent / mixte
+ */
+function computeContratFacturation(
+  contrat: ContratRow,
+  today: Date = new Date()
+): ContratFacturationSnapshot {
+  const tvaRate = getTvaRate(contrat.tva_rate ?? 20);
+  const tva = tvaRate / 100;
+
+  const montantHtGlobal = parseNumber(contrat.montant_ht);
+  const montantHtMensuelFallback = parseNumber(contrat.montant_ht_mensuel);
+  const montantHtOneShot = parseNumber(contrat.montant_ht_one_shot);
+
+  const periods = buildTarifPeriods(contrat);
+
+  const hasMonthlyComponent =
+    periods.length > 0 || montantHtMensuelFallback > 0;
+
+  // Start du contrat : on prend date_debut, sinon date_signature, sinon 1er tarif
+  const firstPeriodStart = periods[0]?.start ?? null;
+  const startRaw = contrat.date_debut ?? contrat.date_signature ?? null;
+  const dateDebut = safeDate(startRaw) ?? firstPeriodStart ?? null;
+
+  let nbMoisTotal = 0;
+  let nbMoisEcoules = 0;
+
+  let engagementRecurrentHt = 0;
+  let duRecurrentHt = 0;
+
+  if (hasMonthlyComponent && dateDebut) {
+    const startMonth = new Date(
+      dateDebut.getFullYear(),
+      dateDebut.getMonth(),
+      1
+    );
+    const todayMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+
+    // Mois écoulés pour le "dû à date"
+    if (todayMonth < startMonth) {
+      nbMoisEcoules = 0;
+    } else {
+      nbMoisEcoules = diffInMonths(startMonth, todayMonth) + 1;
+    }
+
+    // Nombre de mois total : si engagement fixé, on projette, sinon = mois écoulés (contrat open-ended)
+    if (contrat.nb_mois_engagement && contrat.nb_mois_engagement > 0) {
+      nbMoisTotal = contrat.nb_mois_engagement;
+    } else if (contrat.date_fin_prevue) {
+      const dEnd = safeDate(contrat.date_fin_prevue);
+      if (dEnd && dEnd >= dateDebut) {
+        const endMonth = new Date(dEnd.getFullYear(), dEnd.getMonth(), 1);
+        nbMoisTotal = diffInMonths(startMonth, endMonth) + 1;
+      } else {
+        nbMoisTotal = nbMoisEcoules;
+      }
+    } else {
+      // contrat sans durée définie : on ne projette pas plus loin que la date du jour
+      nbMoisTotal = nbMoisEcoules;
+    }
+
+    nbMoisTotal = Math.max(nbMoisTotal, 0);
+    nbMoisEcoules = clamp(nbMoisEcoules, 0, nbMoisTotal);
+
+    // Boucle sur les mois du contrat
+    for (let i = 0; i < nbMoisTotal; i++) {
+      const monthDate = addMonths(startMonth, i);
+      const mensuelHt = findMensuelHtForMonth(
+        monthDate,
+        periods,
+        montantHtMensuelFallback
+      );
+
+      engagementRecurrentHt += mensuelHt;
+
+      if (i < nbMoisEcoules) {
+        duRecurrentHt += mensuelHt;
+      }
+    }
+  }
+
+  let engagementTotalHt = 0;
+  let duHt = 0;
+
+  if (hasMonthlyComponent) {
+    engagementTotalHt = engagementRecurrentHt;
+    duHt = duRecurrentHt;
+
+    // On ajoute la partie one-shot si elle existe
+    if (montantHtOneShot > 0) {
+      engagementTotalHt += montantHtOneShot;
+      if (!dateDebut || today >= dateDebut) {
+        duHt += montantHtOneShot;
+      }
+    }
+  } else {
+    // Pas de récurrent : contrat purement one-shot
+    engagementTotalHt =
+      montantHtGlobal > 0 ? montantHtGlobal : montantHtOneShot;
+
+    if (!dateDebut || today >= dateDebut) {
+      duHt = engagementTotalHt;
+    } else {
+      duHt = 0;
+    }
+
+    nbMoisTotal = contrat.nb_mois_engagement ?? 0;
+    nbMoisEcoules = 0;
+  }
+
+  const engagementTotalTtc = engagementTotalHt * (1 + tva);
+  const duTtc = duHt * (1 + tva);
+
+  // Paiements effectifs
+  let paidTtc = 0;
+  let paidHt = 0;
+
+  for (const p of contrat.contrat_paiements || []) {
+    const pTtc =
+      p.montant_ttc != null
+        ? parseNumber(p.montant_ttc)
+        : parseNumber(p.montant_ht) * (1 + tva);
+    const pHt =
+      p.montant_ht != null ? parseNumber(p.montant_ht) : pTtc / (1 + tva);
+
+    paidTtc += pTtc;
+    paidHt += pHt;
+  }
+
+  const resteDuTtc = Math.max(0, duTtc - paidTtc);
+  const resteDuHt = Math.max(0, duHt - paidHt);
+
+  const engagementFuturHt = Math.max(0, engagementTotalHt - duHt);
+  const engagementFuturTtc = engagementFuturHt * (1 + tva);
+
+  return {
+    nbMoisTotal,
+    nbMoisEcoules,
+    engagementTotalHt,
+    engagementTotalTtc,
+    duHt,
+    duTtc,
+    paidHt,
+    paidTtc,
+    resteDuHt,
+    resteDuTtc,
+    engagementFuturHt,
+    engagementFuturTtc,
+  };
+}
+
+/* ---------- 🔽 AJOUT ICI : CALCUL DU MONTANT RÉCURRENT POUR UN MOIS ------- */
+
+type ContratMonthlyRecurring = {
+    ht: number;
+    ttc: number;
+  };
+  
+  /**
+   * Renvoie le montant récurrent (HT/TTC) du contrat pour un mois donné.
+   * Tient compte des périodes tarifaires, début/fin de contrat, engagement, etc.
+   */
+  function getContratMensuelPourMois(
+    contrat: ContratRow,
+    monthDate: Date
+  ): ContratMonthlyRecurring {
+    const tvaRate = getTvaRate(contrat.tva_rate ?? 20);
+    const tva = tvaRate / 100;
+  
+    const periods = buildTarifPeriods(contrat);
+    const montantHtMensuelFallback = parseNumber(contrat.montant_ht_mensuel);
+  
+    // 🔁 On considère que le contrat est “mensuel” s’il a un montant mensuel
+    // ou des périodes dans contrat_tarifs_mensuels, peu importe les enums
+    const hasMonthlyComponent =
+      periods.length > 0 || montantHtMensuelFallback > 0;
+  
+    if (!hasMonthlyComponent) {
+      return { ht: 0, ttc: 0 };
+    }
+  
+    // Start du contrat : date_debut, sinon date_signature, sinon 1er tarif
+    const firstPeriodStart = periods[0]?.start ?? null;
+    const startRaw = contrat.date_debut ?? contrat.date_signature ?? null;
+    const contractStart = safeDate(startRaw) ?? firstPeriodStart;
+    if (!contractStart) {
+      return { ht: 0, ttc: 0 };
+    }
+  
+    const monthStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+    const contractStartMonth = new Date(
+      contractStart.getFullYear(),
+      contractStart.getMonth(),
+      1
+    );
+  
+    // Si on est avant le début du contrat
+    if (monthStart < contractStartMonth) {
+      return { ht: 0, ttc: 0 };
+    }
+  
+    // Fin du contrat si engagement limité ou date_fin_prevue
+    let contractEndMonth: Date | null = null;
+  
+    if (contrat.nb_mois_engagement && contrat.nb_mois_engagement > 0) {
+      contractEndMonth = addMonths(
+        contractStartMonth,
+        contrat.nb_mois_engagement - 1
+      );
+    } else if (contrat.date_fin_prevue) {
+      const dEnd = safeDate(contrat.date_fin_prevue);
+      if (dEnd) {
+        contractEndMonth = new Date(dEnd.getFullYear(), dEnd.getMonth(), 1);
+      }
+    }
+  
+    // Si on est après la fin du contrat
+    if (contractEndMonth && monthStart > contractEndMonth) {
+      return { ht: 0, ttc: 0 };
+    }
+  
+    const mensuelHt = findMensuelHtForMonth(
+      monthStart,
+      periods,
+      montantHtMensuelFallback
+    );
+  
+    if (mensuelHt <= 0) {
+      return { ht: 0, ttc: 0 };
+    }
+  
+    return {
+      ht: mensuelHt,
+      ttc: mensuelHt * (1 + tva),
+    };
+  }
 
 /* -------------------------------------------------------------------------- */
 /*                          COMPOSANTS UTILITAIRES                            */
