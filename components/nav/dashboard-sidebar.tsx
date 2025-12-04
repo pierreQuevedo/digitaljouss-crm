@@ -4,10 +4,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { Bot, ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { sitemap } from "@/lib/sitemap";
 import { NavUser } from "@/components/nav/nav-user/nav-user";
+import Image from "next/image";
+import LogoGenerique from "@/app/assets/logo/DJ-logo.svg";
 
 export function DashboardSidebar() {
   const pathname = usePathname();
@@ -44,13 +46,16 @@ export function DashboardSidebar() {
 
         {/* En-tête */}
         <div className="flex h-16 items-center gap-2 border-b px-4">
-          <div className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <Bot className="h-4 w-4" />
-          </div>
+            <Image
+              src={LogoGenerique}
+              alt="Logo"
+              width={16}
+              height={16}
+              className="w-8"
+            />
           {!collapsed && (
             <div className="flex flex-col">
-              <span className="text-sm font-semibold">Acme Inc</span>
-              <span className="text-xs text-muted-foreground">Enterprise</span>
+              <span className="text-sm font-semibold">Digital Jouss&apos;</span>
             </div>
           )}
         </div>
