@@ -424,8 +424,8 @@ export function ClientsTable({
         <div className="flex w-full max-w-xs items-center gap-2">
           <Input
             ref={inputRef}
-            placeholder="Rechercher (client, email...)"
-            aria-label="Rechercher un client"
+            placeholder={`Rechercher (${initialStatut}, email...)`}
+            aria-label={`Rechercher un ${initialStatut}`}
             value={searchValue}
             onChange={(e) => {
               const v = e.target.value;
@@ -562,7 +562,7 @@ export function ClientsTable({
                   colSpan={columns.length}
                   className="py-8 text-center text-sm"
                 >
-                  Aucun client pour le moment.
+                  Aucun {initialStatut} pour le moment.
                 </TableCell>
               </TableRow>
             )}
