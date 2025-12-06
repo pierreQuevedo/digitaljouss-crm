@@ -3,8 +3,6 @@ import type React from "react";
 import {
   LayoutDashboard,
   Users,
-  FileText,
-  BarChart2,
   FolderTree,
   Receipt,
   Calendar,
@@ -38,10 +36,14 @@ export const sitemap: { main: NavItem[]; secondary: NavItem[] } = {
       ],
     },
     {
-      label: "Contrats & Propos",
+      label: "Propos & Contrats",
       href: "/dashboard/contrats",
       icon: FolderTree,
       children: [
+        {
+          label: "Proposition Commerciale",
+          href: "/dashboard/contrats/proposition-commerciale",
+        },
         {
           label: "Contrats Statégie Digitale",
           href: "/dashboard/contrats/strategie-digitale",
@@ -58,10 +60,6 @@ export const sitemap: { main: NavItem[]; secondary: NavItem[] } = {
           label: "Contrats Social Media Management",
           href: "/dashboard/contrats/social-media-management",
         },
-        {
-          label: "Proposition Commerciale",
-          href: "/dashboard/contrats/proposition-commerciale",
-        },
       ],
     },
     {
@@ -69,17 +67,7 @@ export const sitemap: { main: NavItem[]; secondary: NavItem[] } = {
       href: "/dashboard/facturation",
       icon: Receipt,
     },
-    {
-      label: "KPI & Reporting",
-      href: "/dashboard/kpi",
-      icon: BarChart2,
-    },
-    {
-      label: "Exports",
-      href: "/dashboard/exports",
-      icon: FileText,
-    },
-    
+
   ],
 
   // Bloc secondaire (en bas : notifications / settings)

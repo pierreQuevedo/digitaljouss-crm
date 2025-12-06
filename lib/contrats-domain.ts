@@ -8,7 +8,7 @@ export type StatutContrat =
   | "termine"
   | "annule";
 
-export type BillingModel = "one_shot" | "recurring" | "mixed";
+export type BillingModel = "one_shot" | "recurring";
 export type BillingPeriod = "one_time" | "monthly" | "quarterly" | "yearly";
 
 export type MinimalContratForRecurring = {
@@ -72,10 +72,6 @@ export type InitialFacturationDates = {
  * - recurring :
  *   - date_debut_facturation_recurrente = explicit_recurring_start
  *     || date_debut || aujourd'hui
- * - mixed :
- *   - date_facturation_one_shot = aujourd'hui
- *   - date_debut_facturation_recurrente = explicit_recurring_start
- *     || date_debut || aujourd'hui
  */
 export function computeInitialFacturationDates(
   args: InitialFacturationArgs,
@@ -97,12 +93,6 @@ export function computeInitialFacturationDates(
   }
 
   if (billing_model === "recurring") {
-    date_debut_facturation_recurrente =
-      explicit_recurring_start || date_debut || today;
-  }
-
-  if (billing_model === "mixed") {
-    date_facturation_one_shot = today;
     date_debut_facturation_recurrente =
       explicit_recurring_start || date_debut || today;
   }

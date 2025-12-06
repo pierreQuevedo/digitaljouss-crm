@@ -29,7 +29,7 @@ type KpiPropositionRow = {
   taux_acceptation: number | null;
 };
 
-type PeriodKey = "30" | "90" | "365";
+type PeriodKey = "365" | "90" | "30";
 
 // ✅ helper pour envoyer un DATE (YYYY-MM-DD) à la fonction SQL
 function formatDate(date: Date): string {
@@ -46,7 +46,7 @@ export function KpiPropositionAcceptVsRefuseCard({
   const supabase = createClient();
   const [data, setData] = useState<KpiPropositionRow | null>(null);
   const [loading, setLoading] = useState(false);
-  const [period, setPeriod] = useState<PeriodKey>("30");
+  const [period, setPeriod] = useState<PeriodKey>("365");
 
   useEffect(() => {
     const fetchKpi = async () => {
@@ -55,12 +55,12 @@ export function KpiPropositionAcceptVsRefuseCard({
       const end = new Date();
       const start = new Date();
 
-      if (period === "30") {
-        start.setDate(end.getDate() - 30);
+      if (period === "365") {
+        start.setDate(end.getDate() - 365);
       } else if (period === "90") {
         start.setDate(end.getDate() - 90);
-      } else if (period === "365") {
-        start.setDate(end.getDate() - 365);
+      } else if (period === "30") {
+        start.setDate(end.getDate() - 30);
       }
 
       const p_start = formatDate(start);

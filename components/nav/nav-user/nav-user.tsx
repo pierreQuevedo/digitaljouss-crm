@@ -327,7 +327,7 @@ export function NavUser({ user }: NavUserProps) {
             }}
           >
             <IconLogout className="mr-2 h-4 w-4" />
-            <span>Log out</span>
+            <span>Se déconnecter</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

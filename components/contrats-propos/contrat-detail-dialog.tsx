@@ -63,7 +63,6 @@ const STATUT_LABEL: Record<ContratRow["statut"], string> = {
 const BILLING_MODEL_LABEL: Record<ContratRow["billing_model"], string> = {
   one_shot: "One shot",
   recurring: "Récurrent",
-  mixed: "Mixte",
 };
 
 const BILLING_PERIOD_LABEL: Record<ContratRow["billing_period"], string> = {
@@ -156,7 +155,6 @@ export function ContratDetailDialog({
     return montantTtc - totalPaidTtc;
   }, [montantTtc, totalPaidTtc]);
 
-  const devise = contrat?.devise ?? "EUR";
 
   const createdAt = contrat
     ? new Date(contrat.created_at).toLocaleDateString("fr-FR")
@@ -350,7 +348,7 @@ export function ContratDetailDialog({
                           : `${oneShotHt.toLocaleString("fr-FR", {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
-                            })} ${devise}`}
+                            })}`}
                       </span>
                     </div>
                   )}
@@ -366,40 +364,9 @@ export function ContratDetailDialog({
                           : `${recurringHt.toLocaleString("fr-FR", {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
-                            })} ${devise} / mois`}
+                            })} / mois`}
                       </span>
                     </div>
-                  )}
-
-                  {contrat.billing_model === "mixed" && (
-                    <>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs text-muted-foreground">
-                          One shot HT
-                        </span>
-                        <span className="text-xs font-medium">
-                          {oneShotHt == null
-                            ? "—"
-                            : `${oneShotHt.toLocaleString("fr-FR", {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2,
-                              })} ${devise}`}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs text-muted-foreground">
-                          Mensuel HT
-                        </span>
-                        <span className="text-xs font-medium">
-                          {recurringHt == null
-                            ? "—"
-                            : `${recurringHt.toLocaleString("fr-FR", {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2,
-                              })} ${devise} / mois`}
-                        </span>
-                      </div>
-                    </>
                   )}
 
                   {/* Total / TVA / TTC comme synthèse */}
@@ -414,7 +381,7 @@ export function ContratDetailDialog({
                           : `${montantHt.toLocaleString("fr-FR", {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
-                            })} ${devise}`}
+                            })}`}
                       </span>
                     </div>
 
@@ -442,7 +409,7 @@ export function ContratDetailDialog({
                           : `${montantTtc.toLocaleString("fr-FR", {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
-                            })} ${devise}`}
+                            })}`}
                       </span>
                     </div>
                   </div>
@@ -480,7 +447,7 @@ export function ContratDetailDialog({
                         : `${totalPaidHt.toLocaleString("fr-FR", {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
-                          })} ${devise}`}
+                          })}`}
                     </span>
                   </div>
 
@@ -495,7 +462,7 @@ export function ContratDetailDialog({
                         : `${resteHt.toLocaleString("fr-FR", {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
-                          })} ${devise}`}
+                          })}`}
                     </span>
                   </div>
 
@@ -510,7 +477,7 @@ export function ContratDetailDialog({
                         : `${totalPaidTtc.toLocaleString("fr-FR", {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
-                          })} ${devise}`}
+                          })}`}
                     </span>
                   </div>
 
@@ -525,7 +492,7 @@ export function ContratDetailDialog({
                         : `${resteTtc.toLocaleString("fr-FR", {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
-                          })} ${devise}`}
+                          })}`}
                     </span>
                   </div>
                 </div>

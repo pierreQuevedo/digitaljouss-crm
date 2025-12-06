@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
-import { toast } from "sonner";
+import JSZip from "jszip";
+// import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,11 +27,32 @@ import {
 } from "@/components/ui/table";
 
 import {
-  canStartRecurringBilling,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
+
+import { EllipsisVerticalIcon } from "lucide-react";
+import { toast } from "sonner";
+
+import {
+  // canStartRecurringBilling,
   type BillingModel,
   type StatutContrat,
 } from "@/lib/contrats-domain";
-import { DownloadIcon } from "lucide-react";
+import { Eye, Download, Trash2, Pencil, FileText, Plus } from "lucide-react";
 import { ContratDocumentUploader } from "@/components/contrats-propos/contrat-document-uploader";
 
 const supabase = createClient();
@@ -51,6 +74,9 @@ export type ContratRow = {
   proposition_id: string;
   client_id: string;
 
+  slug: string;
+  client_slug: string | null;
+
   titre: string;
   description: string | null;
   statut: StatutContrat;
@@ -60,7 +86,6 @@ export type ContratRow = {
   montant_ht_mensuel: number | null;
   tva_rate: number | null;
   montant_ttc: number | null;
-  devise: string | null;
 
   billing_model: BillingModel;
   billing_period: BillingPeriod;
@@ -88,13 +113,22 @@ export type ContratRow = {
   service_category_slug: string | null;
   service_category_label: string | null;
 
+  proposition_service_ids: string[]; // pour la logique / liens
+  proposition_services: { id: string; label: string | null }[]; // pour l'affichage UI
+
   // docs contrat
   devis_pdf_path: string | null;
   devis_signe_pdf_path: string | null;
   facture_pdf_path: string | null;
+
+  total_paye_ht: number | null;
+  total_paye_ttc: number | null;
+  reste_a_payer_ht: number | null;
+  reste_a_payer_ttc: number | null;
 };
 
 type DbClientFromJoin = {
+  slug: string;
   nom_affichage: string | null;
   nom_legal: string | null;
 };
@@ -105,6 +139,23 @@ type DbServiceCategoryFromJoin = {
   label: string;
 };
 
+type DocType = "devis" | "devis_signe" | "facture";
+
+type ListedFile = {
+  name: string;
+  path: string;
+};
+
+type DbServiceFromJoin = {
+  id: string;
+  label: string | null;
+};
+
+type DbPropositionServiceFromJoin = {
+  service_id: string;
+  service: DbServiceFromJoin | DbServiceFromJoin[] | null;
+};
+
 type DbPropositionFromJoin = {
   titre: string | null;
   url_envoi: string | null;
@@ -112,10 +163,15 @@ type DbPropositionFromJoin = {
     | DbServiceCategoryFromJoin
     | DbServiceCategoryFromJoin[]
     | null;
+  proposition_services:
+    | DbPropositionServiceFromJoin
+    | DbPropositionServiceFromJoin[]
+    | null;
 };
 
 type DbContratRow = {
   id: string;
+  slug: string;
   proposition_id: string;
   client_id: string;
 
@@ -128,7 +184,6 @@ type DbContratRow = {
   montant_ht_mensuel: string | number | null;
   tva_rate: string | number | null;
   montant_ttc: string | number | null;
-  devise: string | null;
 
   billing_model: BillingModel | null;
   billing_period: BillingPeriod | null;
@@ -149,6 +204,11 @@ type DbContratRow = {
 
   client: DbClientFromJoin | DbClientFromJoin[] | null;
   proposition: DbPropositionFromJoin | DbPropositionFromJoin[] | null;
+
+  total_paye_ht: string | number | null;
+  total_paye_ttc: string | number | null;
+  reste_a_payer_ht: string | number | null;
+  reste_a_payer_ttc: string | number | null;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -205,20 +265,34 @@ const STATUT_LABEL: Record<StatutContrat, string> = {
 const BILLING_MODEL_LABEL: Record<BillingModel, string> = {
   one_shot: "One shot",
   recurring: "Récurrent",
-  mixed: "Mixte",
-};
-
-const BILLING_PERIOD_LABEL: Record<BillingPeriod, string> = {
-  one_time: "Ponctuel",
-  monthly: "Mensuel",
-  quarterly: "Trimestriel",
-  yearly: "Annuel",
 };
 
 export type CategoryOption = {
   value: string;
   label: string;
 };
+
+function slugifyForFileName(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // accents
+    .replace(/[^a-z0-9]+/g, "-") // espaces & caractères spéciaux -> -
+    .replace(/^-+|-+$/g, ""); // trim -
+}
+
+function getProjectBaseName(c: ContratRow | null): string {
+  if (!c) return "contrat";
+
+  const raw =
+    c.proposition_titre ||
+    c.titre ||
+    c.client_nom_affichage ||
+    c.client_nom_legal ||
+    "contrat";
+
+  return slugifyForFileName(raw);
+}
 
 /* -------------------------------------------------------------------------- */
 /*                               Props du tableau                             */
@@ -245,11 +319,8 @@ export type ContratsTableProps = {
   /** Options personnalisées de catégories (sinon fallback sur les 4 standards) */
   categoryOptions?: CategoryOption[];
 
-  /**
-   * Montant déjà payé HT par contrat (pour calculer "Reste à charge HT" dans le tableau).
-   * Exemple: { [contratId]: 1200.50 }
-   */
-  paidByContratHt?: Record<string, number>;
+  /** Afficher / masquer le filtre de catégories dans la barre de filtres */
+  showCategoryFilter?: boolean;
 
   /** Callback quand on clique toute la ligne */
   onRowClick?: (contrat: ContratRow) => void;
@@ -274,12 +345,29 @@ export function ContratsTable({
   initialBillingModelFilter = "all",
   defaultPageSize = 50,
   categoryOptions,
-  paidByContratHt,
+  showCategoryFilter = true,
   onRowClick,
   renderRowActions,
 }: ContratsTableProps) {
+  const router = useRouter();
   const [data, setData] = useState<ContratRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [updatingStatutId, setUpdatingStatutId] = useState<string | null>(null);
+
+  const [docsDialogOpen, setDocsDialogOpen] = useState(false);
+  const [selectedContrat, setSelectedContrat] = useState<ContratRow | null>(
+    null
+  );
+  const [docDeleting, setDocDeleting] = useState<DocType | null>(null);
+  const [zipLoading, setZipLoading] = useState(false);
+
+  // Doc actuellement en édition (devis / devis signé / facture)
+  const [activeDocType, setActiveDocType] = useState<DocType | null>(null);
+
+  // dialog pour gérer les factures multiples
+  const [facturesDialogOpen, setFacturesDialogOpen] = useState(false);
+  const [factures, setFactures] = useState<ListedFile[]>([]);
+  const [facturesLoading, setFacturesLoading] = useState(false);
 
   const [searchValue, setSearchValue] = useState("");
   const [statutFilter, setStatutFilter] = useState<StatutContrat | "all">(
@@ -323,6 +411,553 @@ export function ContratsTable({
     [billingPeriodIn]
   );
 
+  /* ------------------------- helpers statut / docs -------------------------- */
+
+  const handleChangeStatut = async (
+    contratId: string,
+    newStatut: StatutContrat
+  ) => {
+    // Optimistic update
+    setData((prev) =>
+      prev.map((c) =>
+        c.id === contratId
+          ? {
+              ...c,
+              statut: newStatut,
+            }
+          : c
+      )
+    );
+
+    setUpdatingStatutId(contratId);
+
+    const { error } = await supabase
+      .from("contrats")
+      .update({ statut: newStatut })
+      .eq("id", contratId);
+
+    setUpdatingStatutId(null);
+
+    if (error) {
+      console.error(error);
+      toast.error("Erreur lors de la mise à jour du statut", {
+        description: error.message,
+      });
+      // si tu veux être ultra propre : refetch ici
+    } else {
+      toast.success("Statut mis à jour");
+    }
+  };
+
+  const getDocColumn = (docType: DocType): keyof ContratRow => {
+    if (docType === "devis") return "devis_pdf_path";
+    if (docType === "devis_signe") return "devis_signe_pdf_path";
+    return "facture_pdf_path";
+  };
+
+  const getDocPath = (
+    contrat: ContratRow | null,
+    docType: DocType
+  ): string | null => {
+    if (!contrat) return null;
+    const column = getDocColumn(docType);
+    const value = contrat[column];
+    return typeof value === "string" ? value : null;
+  };
+
+  const openSignedUrlInNewTab = async (path: string) => {
+    const { data, error } = await supabase.storage
+      .from("documents-contrats")
+      .createSignedUrl(path, 60 * 5);
+
+    if (error || !data?.signedUrl) {
+      console.error(error);
+      toast.error("Impossible d’ouvrir le document");
+      return;
+    }
+
+    window.open(data.signedUrl, "_blank");
+  };
+
+  // ✅ force un vrai téléchargement via Blob (même pour devis / devis signé)
+  const downloadFileFromStorage = async (path: string, filename?: string) => {
+    const { data, error } = await supabase.storage
+      .from("documents-contrats")
+      .download(path);
+
+    if (error || !data) {
+      console.error(error);
+      toast.error("Impossible de télécharger le document");
+      return;
+    }
+
+    const url = URL.createObjectURL(data);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename ?? "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const loadFacturesForContrat = async (
+    contrat: ContratRow
+  ): Promise<ListedFile[]> => {
+    setFacturesLoading(true);
+    try {
+      const prefix = `contrats/${contrat.id}/factures`;
+      const { data, error } = await supabase.storage
+        .from("documents-contrats")
+        .list(prefix, { limit: 100 });
+
+      if (error) {
+        console.error(error);
+        toast.error("Impossible de lister les factures");
+        setFactures([]);
+        return [];
+      }
+
+      const files: ListedFile[] =
+        data?.map((f) => ({
+          name: f.name,
+          path: `${prefix}/${f.name}`,
+        })) ?? [];
+
+      setFactures(files);
+      return files;
+    } finally {
+      setFacturesLoading(false);
+    }
+  };
+
+  const handlePreviewDoc = async (docType: DocType) => {
+    if (!selectedContrat) return;
+
+    if (docType === "facture") {
+      const files = await loadFacturesForContrat(selectedContrat);
+
+      if (!files.length) {
+        toast.error("Aucune facture pour ce contrat.");
+        return;
+      }
+
+      if (files.length === 1) {
+        await openSignedUrlInNewTab(files[0].path);
+        return;
+      }
+
+      // plusieurs factures -> dialog
+      setFacturesDialogOpen(true);
+      return;
+    }
+
+    // Devis / Devis signé
+    const path = getDocPath(selectedContrat, docType);
+    if (!path) {
+      toast.error("Aucun document pour ce type.");
+      return;
+    }
+
+    await openSignedUrlInNewTab(path);
+  };
+
+  const handleDownloadDoc = async (docType: DocType) => {
+    if (!selectedContrat) return;
+
+    const baseName = getProjectBaseName(selectedContrat);
+
+    if (docType === "facture") {
+      const files = await loadFacturesForContrat(selectedContrat);
+
+      if (!files.length) {
+        toast.error("Aucune facture pour ce contrat.");
+        return;
+      }
+
+      if (files.length === 1) {
+        await downloadFileFromStorage(files[0].path, `facture-${baseName}.pdf`);
+        return;
+      }
+
+      // plusieurs factures -> ZIP factures-<projet>.zip
+      setZipLoading(true);
+      try {
+        const zip = new JSZip();
+
+        for (const f of files) {
+          const { data, error } = await supabase.storage
+            .from("documents-contrats")
+            .download(f.path);
+
+          if (error || !data) {
+            console.error(error);
+            toast.error(`Erreur lors du téléchargement de ${f.name}`);
+            continue;
+          }
+
+          zip.file(f.name, data);
+        }
+
+        const blob = await zip.generateAsync({ type: "blob" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `factures-${baseName}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        toast.error("Erreur lors de la génération du ZIP des factures");
+      } finally {
+        setZipLoading(false);
+      }
+
+      return;
+    }
+
+    // Devis / devis signé -> vrai téléchargement
+    const path = getDocPath(selectedContrat, docType);
+    if (!path) {
+      toast.error("Aucun document pour ce type.");
+      return;
+    }
+
+    const filename =
+      docType === "devis"
+        ? `devis-${baseName}.pdf`
+        : `devis-signe-${baseName}.pdf`;
+
+    await downloadFileFromStorage(path, filename);
+  };
+
+  const handleDeleteDoc = async (docType: DocType) => {
+    if (!selectedContrat) return;
+
+    setDocDeleting(docType);
+
+    try {
+      if (docType === "facture") {
+        const files = await loadFacturesForContrat(selectedContrat);
+
+        if (!files.length) {
+          toast.error("Aucune facture à supprimer.");
+          return;
+        }
+
+        const paths = files.map((f) => f.path);
+
+        const { error: removeError } = await supabase.storage
+          .from("documents-contrats")
+          .remove(paths);
+
+        if (removeError) {
+          console.error(removeError);
+          toast.error("Erreur lors de la suppression des factures");
+          return;
+        }
+
+        const { error: updateError } = await supabase
+          .from("contrats")
+          .update({ facture_pdf_path: null })
+          .eq("id", selectedContrat.id);
+
+        if (updateError) {
+          console.error(updateError);
+          toast.error(
+            "Factures supprimées du stockage, mais erreur lors de la mise à jour du contrat"
+          );
+          return;
+        }
+
+        setData((prev) =>
+          prev.map((c) =>
+            c.id === selectedContrat.id ? { ...c, facture_pdf_path: null } : c
+          )
+        );
+        setSelectedContrat((prev) =>
+          prev && prev.id === selectedContrat.id
+            ? { ...prev, facture_pdf_path: null }
+            : prev
+        );
+        setFactures([]);
+
+        toast.success("Toutes les factures ont été supprimées");
+        return;
+      }
+
+      // devis / devis signé
+      const path = getDocPath(selectedContrat, docType);
+      if (!path) {
+        toast.error("Aucun document pour ce type.");
+        return;
+      }
+
+      const column = getDocColumn(docType);
+
+      const { error: removeError } = await supabase.storage
+        .from("documents-contrats")
+        .remove([path]);
+
+      if (removeError) {
+        console.error(removeError);
+        toast.error("Erreur lors de la suppression du fichier");
+        return;
+      }
+
+      const { error: updateError } = await supabase
+        .from("contrats")
+        .update({ [column]: null })
+        .eq("id", selectedContrat.id);
+
+      if (updateError) {
+        console.error(updateError);
+        toast.error("Fichier supprimé du stockage, mais erreur SQL");
+        return;
+      }
+
+      setData((prev) =>
+        prev.map((c) =>
+          c.id === selectedContrat.id
+            ? {
+                ...c,
+                [column]: null,
+              }
+            : c
+        )
+      );
+
+      setSelectedContrat((prev) =>
+        prev && prev.id === selectedContrat.id
+          ? { ...prev, [column]: null }
+          : prev
+      );
+
+      toast.success("Document supprimé");
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur inattendue lors de la suppression");
+    } finally {
+      setDocDeleting(null);
+    }
+  };
+
+  // 🔧 + / crayon -> affiche la dropzone directement dans le dialog principal
+  const handleEditDoc = (docType: DocType) => {
+    if (!selectedContrat) return;
+
+    setActiveDocType((prev) => (prev === docType ? null : docType));
+  };
+
+  const handleDownloadAllDocsZip = async () => {
+    if (!selectedContrat) return;
+
+    const baseName = getProjectBaseName(selectedContrat);
+
+    const files: { name: string; path: string }[] = [];
+
+    const devisPath = getDocPath(selectedContrat, "devis");
+    if (devisPath)
+      files.push({
+        name: `devis-${baseName}.pdf`,
+        path: devisPath,
+      });
+
+    const devisSignePath = getDocPath(selectedContrat, "devis_signe");
+    if (devisSignePath)
+      files.push({
+        name: `devis-signe-${baseName}.pdf`,
+        path: devisSignePath,
+      });
+
+    const facturePath = getDocPath(selectedContrat, "facture");
+    if (facturePath)
+      files.push({
+        name: `facture-${baseName}.pdf`,
+        path: facturePath,
+      });
+
+    if (!files.length) {
+      toast.error("Aucun document à télécharger pour ce contrat.");
+      return;
+    }
+
+    setZipLoading(true);
+    try {
+      const zip = new JSZip();
+
+      for (const file of files) {
+        const { data, error } = await supabase.storage
+          .from("documents-contrats")
+          .download(file.path);
+
+        if (error || !data) {
+          console.error(error);
+          toast.error(`Erreur lors du téléchargement de ${file.name}`);
+          continue;
+        }
+
+        zip.file(file.name, data);
+      }
+
+      const blob = await zip.generateAsync({ type: "blob" });
+
+      const a = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      a.href = url;
+
+      a.download = `docs_contrat-${baseName}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur lors de la génération du ZIP");
+    } finally {
+      setZipLoading(false);
+    }
+  };
+
+  const renderDocRow = (label: string, docType: DocType) => {
+    if (!selectedContrat) return null;
+
+    const path = getDocPath(selectedContrat, docType);
+    const hasFile = !!path;
+    const baseName = getProjectBaseName(selectedContrat);
+
+    let logicalFileName: string;
+    switch (docType) {
+      case "devis":
+        logicalFileName = `devis-${baseName}.pdf`;
+        break;
+      case "devis_signe":
+        logicalFileName = `devis-signe-${baseName}.pdf`;
+        break;
+      case "facture":
+        logicalFileName = `facture-${baseName}.pdf`;
+        break;
+      default:
+        logicalFileName = `${label.toLowerCase()}-${baseName}.pdf`;
+    }
+
+    const isEditing = activeDocType === docType;
+
+    return (
+      <div key={docType} className="rounded-md border px-3 py-2 text-xs">
+        {/* Ligne principale : titre + boutons */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-col">
+            <span className="font-medium">{label}</span>
+            <span className="font-mono text-[11px] max-w-[220px] truncate">
+              {hasFile ? logicalFileName : `(${logicalFileName} non présent)`}
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              {hasFile ? "Fichier attaché" : "Aucun fichier pour ce type"}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            {hasFile ? (
+              <>
+                {/* Voir */}
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  onClick={() => handlePreviewDoc(docType)}
+                  title="Voir le document"
+                >
+                  <Eye className="h-4 w-4" />
+                  <span className="sr-only">Voir le document</span>
+                </Button>
+
+                {/* Télécharger */}
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  onClick={() => handleDownloadDoc(docType)}
+                  title="Télécharger"
+                  disabled={zipLoading && docType === "facture"}
+                >
+                  <Download className="h-4 w-4" />
+                  <span className="sr-only">Télécharger</span>
+                </Button>
+
+                {/* Crayon = éditer / remplacer via dropzone inline */}
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  onClick={() => handleEditDoc(docType)}
+                  title="Remplacer le fichier"
+                >
+                  <Pencil className="h-4 w-4" />
+                  <span className="sr-only">Remplacer le fichier</span>
+                </Button>
+
+                {/* Supprimer */}
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => handleDeleteDoc(docType)}
+                  disabled={docDeleting === docType}
+                  title="Supprimer"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span className="sr-only">Supprimer</span>
+                </Button>
+              </>
+            ) : (
+              <>
+                {/* Aucun fichier -> juste un bouton + qui affiche la dropzone inline */}
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  onClick={() => handleEditDoc(docType)}
+                  title="Ajouter un fichier"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span className="sr-only">Ajouter un fichier</span>
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Zone dropzone inline quand + ou crayon est cliqué */}
+        {isEditing && (
+          <div className="mt-3 rounded-md border-2 border-dashed border-muted-foreground/30 bg-muted/40 px-4 py-4">
+            <p className="mb-2 text-xs text-muted-foreground">
+              {docType === "devis"
+                ? "Mettre à jour le devis. Dépose ton fichier PDF ou clique dans la zone pour le choisir."
+                : docType === "devis_signe"
+                ? "Mettre à jour le devis signé. Dépose ton fichier PDF ou clique dans la zone pour le choisir."
+                : "Ajouter / mettre à jour les factures. Dépose ton ou tes fichiers PDF ou clique dans la zone pour les choisir."}
+            </p>
+
+            <ContratDocumentUploader
+              contratId={selectedContrat.id}
+              docType={docType}
+              existingPath={path ?? null}
+              zipBaseName={
+                selectedContrat.proposition_titre ||
+                selectedContrat.titre ||
+                selectedContrat.client_nom_affichage ||
+                undefined
+              }
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
+
   /* ------------------------------ fetch contrats ----------------------------- */
 
   useEffect(() => {
@@ -331,10 +966,11 @@ export function ContratsTable({
 
       try {
         let query = supabase
-          .from("contrats")
+          .from("contrats_with_paiements")
           .select(
             `
             id,
+            slug,
             proposition_id,
             client_id,
             titre,
@@ -345,7 +981,6 @@ export function ContratsTable({
             montant_ht_mensuel,
             tva_rate,
             montant_ttc,
-            devise,
             billing_model,
             billing_period,
             date_debut,
@@ -360,8 +995,13 @@ export function ContratsTable({
             devis_pdf_path,
             devis_signe_pdf_path,
             facture_pdf_path,
+            total_paye_ht,
+            total_paye_ttc,
+            reste_a_payer_ht,
+            reste_a_payer_ttc,
 
             client:client_id (
+              slug,
               nom_affichage,
               nom_legal
             ),
@@ -373,6 +1013,13 @@ export function ContratsTable({
                 id,
                 slug,
                 label
+              ),
+              proposition_services (
+                service_id,
+                service:service_id (
+                  id,
+                  label
+                )
               )
             )
           `
@@ -450,16 +1097,54 @@ export function ContratsTable({
                 : propositionJoined.service_category
               : null;
 
+          // ------------ services issus de proposition_services ------------
+          const propositionServicesRaw =
+            propositionJoined?.proposition_services ?? null;
+
+          let propositionServices: { id: string; label: string | null }[] = [];
+          let propositionServiceIds: string[] = [];
+
+          if (propositionServicesRaw) {
+            const arr = Array.isArray(propositionServicesRaw)
+              ? propositionServicesRaw
+              : [propositionServicesRaw];
+
+            propositionServices = arr.map((ps) => {
+              const serviceJoined = ps.service
+                ? Array.isArray(ps.service)
+                  ? ps.service[0] ?? null
+                  : ps.service
+                : null;
+
+              const label = serviceJoined?.label ?? null;
+
+              return {
+                id: ps.service_id,
+                label,
+              };
+            });
+
+            propositionServiceIds = propositionServices.map((s) => s.id);
+          }
+
           const montantHt = toNumber(row.montant_ht);
           const montantHtOneShot = toNumber(row.montant_ht_one_shot);
           const montantHtMensuel = toNumber(row.montant_ht_mensuel);
           const tvaRate = toNumber(row.tva_rate);
           const montantTtc = toNumber(row.montant_ttc);
 
+          const totalPayeHt = toNumber(row.total_paye_ht);
+          const totalPayeTtc = toNumber(row.total_paye_ttc);
+          const resteHt = toNumber(row.reste_a_payer_ht);
+          const resteTtc = toNumber(row.reste_a_payer_ttc);
+
           return {
             id: row.id,
             proposition_id: row.proposition_id,
             client_id: row.client_id,
+
+            slug: row.slug,
+            client_slug: clientJoined?.slug ?? null,
 
             titre: row.titre,
             description: row.description ?? null,
@@ -470,7 +1155,6 @@ export function ContratsTable({
             montant_ht_mensuel: montantHtMensuel,
             tva_rate: tvaRate,
             montant_ttc: montantTtc,
-            devise: row.devise ?? "EUR",
 
             billing_model: row.billing_model ?? "one_shot",
             billing_period: row.billing_period ?? "one_time",
@@ -506,6 +1190,14 @@ export function ContratsTable({
             devis_pdf_path: row.devis_pdf_path,
             devis_signe_pdf_path: row.devis_signe_pdf_path,
             facture_pdf_path: row.facture_pdf_path,
+
+            total_paye_ht: totalPayeHt,
+            total_paye_ttc: totalPayeTtc,
+            reste_a_payer_ht: resteHt,
+            reste_a_payer_ttc: resteTtc,
+
+            proposition_service_ids: propositionServiceIds,
+            proposition_services: propositionServices,
           };
         });
 
@@ -528,6 +1220,14 @@ export function ContratsTable({
   useEffect(() => {
     setPageIndex(0);
   }, [searchValue, statutFilter, categoryFilter, billingModelFilter, pageSize]);
+
+  useEffect(() => {
+    // Quand le dialog principal est fermé, on nettoie
+    if (!docsDialogOpen) {
+      setSelectedContrat(null);
+      setActiveDocType(null);
+    }
+  }, [docsDialogOpen]);
 
   /* ------------------------------ filtres front ------------------------------ */
 
@@ -583,6 +1283,14 @@ export function ContratsTable({
     setSearchValue("");
   };
 
+  const fmt = (v: number | null) =>
+    v == null
+      ? "—"
+      : v.toLocaleString("fr-FR", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+
   /* -------------------------------------------------------------------------- */
   /*                                   Render                                   */
   /* -------------------------------------------------------------------------- */
@@ -633,23 +1341,27 @@ export function ContratsTable({
           </SelectContent>
         </Select>
 
-        {/* Filtre catégorie */}
-        <Select
-          value={categoryFilter}
-          onValueChange={(value) => setCategoryFilter(value as string | "all")}
-        >
-          <SelectTrigger className="h-8 w-[210px] text-xs">
-            <SelectValue placeholder="Toutes les catégories" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Toutes les catégories</SelectItem>
-            {effectiveCategoryOptions.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value}>
-                {opt.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {/* Filtre catégorie (optionnel) */}
+        {showCategoryFilter && (
+          <Select
+            value={categoryFilter}
+            onValueChange={(value) =>
+              setCategoryFilter(value as string | "all")
+            }
+          >
+            <SelectTrigger className="h-8 w-[210px] text-xs">
+              <SelectValue placeholder="Toutes les catégories" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Toutes les catégories</SelectItem>
+              {effectiveCategoryOptions.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
 
         {/* Filtre modèle de facturation (one shot / RMM / mixte) */}
         <Select
@@ -669,7 +1381,6 @@ export function ContratsTable({
             <SelectItem value="recurring">
               {BILLING_MODEL_LABEL.recurring}
             </SelectItem>
-            <SelectItem value="mixed">{BILLING_MODEL_LABEL.mixed}</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -686,31 +1397,16 @@ export function ContratsTable({
                 Catégorie
               </TableHead>
               <TableHead className="px-3 py-2 text-left text-xs font-medium">
-                Modèle
-              </TableHead>
-              <TableHead className="px-3 py-2 text-left text-xs font-medium">
-                Facturation
-              </TableHead>
-              <TableHead className="px-3 py-2 text-left text-xs font-medium">
-                Statut
+                Services
               </TableHead>
               <TableHead className="px-3 py-2 text-left text-xs font-medium">
                 Montant
               </TableHead>
               <TableHead className="px-3 py-2 text-left text-xs font-medium">
-                Reste
+                Statut
               </TableHead>
               <TableHead className="px-3 py-2 text-left text-xs font-medium">
-                Propos
-              </TableHead>
-              <TableHead className="px-3 py-2 text-left text-xs font-medium">
-                Devis
-              </TableHead>
-              <TableHead className="px-3 py-2 text-left text-xs font-medium">
-                Devis signé
-              </TableHead>
-              <TableHead className="px-3 py-2 text-left text-xs font-medium">
-                Factures
+                Docs
               </TableHead>
               {renderRowActions && (
                 <TableHead className="px-3 py-2 text-right text-xs font-medium">
@@ -724,7 +1420,7 @@ export function ContratsTable({
             {loading ? (
               <TableRow>
                 <TableCell
-                  colSpan={renderRowActions ? 12 : 11}
+                  colSpan={renderRowActions ? 6 : 5}
                   className="py-8 text-center text-sm text-muted-foreground"
                 >
                   Chargement des contrats...
@@ -733,7 +1429,7 @@ export function ContratsTable({
             ) : pageData.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={renderRowActions ? 12 : 11}
+                  colSpan={renderRowActions ? 6 : 5}
                   className="py-8 text-center text-sm text-muted-foreground"
                 >
                   Aucun contrat pour le moment.
@@ -741,31 +1437,11 @@ export function ContratsTable({
               </TableRow>
             ) : (
               pageData.map((c) => {
-                const devise = c.devise ?? "EUR";
-
-                const totalPaidHt =
-                  paidByContratHt && c.id in paidByContratHt
-                    ? paidByContratHt[c.id] ?? 0
-                    : 0;
-
-                const resteHt =
-                  c.montant_ht != null ? c.montant_ht - totalPaidHt : null;
-
                 const handleRowClick = () => {
                   if (onRowClick) {
                     onRowClick(c);
                   }
                 };
-
-                const fmt = (v: number | null) =>
-                  v == null
-                    ? "—"
-                    : v.toLocaleString("fr-FR", {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      });
-
-                const recurringReady = canStartRecurringBilling(c);
 
                 return (
                   <TableRow
@@ -780,14 +1456,28 @@ export function ContratsTable({
                     {/* Contrat + client + proposition */}
                     <TableCell className="px-3 py-2 align-middle">
                       <div className="flex flex-col">
-                        <span className="text-sm font-medium">
+                        {/* Titre cliquable -> détail contrat */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (c.client_slug && c.slug) {
+                              router.push(
+                                `/dashboard/clients/${c.client_slug}/contrats/${c.slug}`
+                              );
+                            }
+                          }}
+                          className="w-fit text-left text-sm font-medium text-primary hover:underline"
+                        >
                           {c.titre || "Sans titre"}
-                        </span>
+                        </button>
+
                         <span className="text-xs text-muted-foreground">
                           {c.client_nom_affichage ||
                             c.client_nom_legal ||
                             "Client inconnu"}
                         </span>
+
                         {c.proposition_titre && (
                           <span className="text-[11px] text-muted-foreground">
                             Propal : {c.proposition_titre}
@@ -801,7 +1491,7 @@ export function ContratsTable({
                       </div>
                     </TableCell>
 
-                    {/* Catégorie */}
+                    {/* Service (catégorie) */}
                     <TableCell className="px-3 py-2 align-middle">
                       {c.service_category_label ? (
                         <span
@@ -825,318 +1515,97 @@ export function ContratsTable({
                       )}
                     </TableCell>
 
-                    {/* Modèle + périodicité */}
                     <TableCell className="px-3 py-2 align-middle text-xs">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="font-medium">
-                          {BILLING_MODEL_LABEL[c.billing_model]}
-                        </span>
-                        <span className="text-[11px] text-muted-foreground">
-                          {BILLING_PERIOD_LABEL[c.billing_period]}
-                        </span>
-                      </div>
-                    </TableCell>
-
-                    {/* Facturation (dates & état) */}
-                    <TableCell className="px-3 py-2 align-middle text-xs">
-                      {c.billing_model === "one_shot" && (
-                        <div className="flex flex-col">
-                          <span className="font-medium">
-                            One shot le{" "}
-                            {c.date_facturation_one_shot
-                              ? new Date(
-                                  c.date_facturation_one_shot
-                                ).toLocaleDateString("fr-FR")
-                              : "—"}
-                          </span>
-                        </div>
-                      )}
-
-                      {c.billing_model === "recurring" && (
-                        <div className="flex flex-col">
-                          <span>
-                            Début récurrent :{" "}
-                            {c.date_debut_facturation_recurrente
-                              ? new Date(
-                                  c.date_debut_facturation_recurrente
-                                ).toLocaleDateString("fr-FR")
-                              : "—"}
-                          </span>
-                          <span className="text-[11px] text-muted-foreground">
-                            {recurringReady
-                              ? "OK pour lancer la facturation"
-                              : "Pas encore active"}
-                          </span>
-                        </div>
-                      )}
-
-                      {c.billing_model === "mixed" && (
-                        <div className="flex flex-col">
-                          <span>
-                            One shot :{" "}
-                            {c.date_facturation_one_shot
-                              ? new Date(
-                                  c.date_facturation_one_shot
-                                ).toLocaleDateString("fr-FR")
-                              : "—"}
-                          </span>
-                          <span>
-                            Récurrent :{" "}
-                            {c.date_debut_facturation_recurrente
-                              ? new Date(
-                                  c.date_debut_facturation_recurrente
-                                ).toLocaleDateString("fr-FR")
-                              : "—"}
-                          </span>
-                          <span className="text-[11px] text-muted-foreground">
-                            {recurringReady
-                              ? "Récurrent prêt à lancer"
-                              : "Récurrent en attente"}
-                          </span>
-                        </div>
-                      )}
-                    </TableCell>
-
-                    {/* Statut */}
-                    <TableCell className="px-3 py-2 align-middle text-xs text-muted-foreground">
-                      {STATUT_LABEL[c.statut]}
-                    </TableCell>
-
-                    {/* Montant : HT + TTC */}
-                    <TableCell className="px-3 py-2 align-middle text-xs">
-                      {c.billing_model === "one_shot" ? (
-                        (() => {
-                          const ht = c.montant_ht_one_shot ?? c.montant_ht;
-                          const rate = c.tva_rate ?? null;
-                          const ttc =
-                            ht != null && rate != null
-                              ? ht * (1 + rate / 100)
-                              : null;
-
-                          if (ht == null) {
-                            return (
-                              <span className="text-muted-foreground">—</span>
-                            );
-                          }
-
-                          return (
-                            <div className="flex flex-col">
-                              <span>
-                                {fmt(ht)} {devise} HT
-                              </span>
-                              {ttc != null && (
-                                <span className="text-[11px] text-muted-foreground">
-                                  {fmt(ttc)} {devise} TTC
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })()
-                      ) : c.billing_model === "recurring" ? (
-                        (() => {
-                          const ht = c.montant_ht_mensuel;
-                          const rate = c.tva_rate ?? null;
-                          const ttc =
-                            ht != null && rate != null
-                              ? ht * (1 + rate / 100)
-                              : null;
-
-                          if (ht == null) {
-                            return (
-                              <span className="text-muted-foreground">—</span>
-                            );
-                          }
-
-                          return (
-                            <div className="flex flex-col">
-                              <span>
-                                {fmt(ht)} {devise} HT / mois
-                              </span>
-                              {ttc != null && (
-                                <span className="text-[11px] text-muted-foreground">
-                                  {fmt(ttc)} {devise} TTC / mois
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })()
-                      ) : c.billing_model === "mixed" ? (
-                        (() => {
-                          const oneShotHt = c.montant_ht_one_shot;
-                          const mensuelHt = c.montant_ht_mensuel;
-                          const totalHt = c.montant_ht;
-                          const rate = c.tva_rate ?? null;
-
-                          const oneShotTtc =
-                            oneShotHt != null && rate != null
-                              ? oneShotHt * (1 + rate / 100)
-                              : null;
-                          const mensuelTtc =
-                            mensuelHt != null && rate != null
-                              ? mensuelHt * (1 + rate / 100)
-                              : null;
-
-                          if (
-                            oneShotHt == null &&
-                            mensuelHt == null &&
-                            totalHt == null
-                          ) {
-                            return (
-                              <span className="text-muted-foreground">—</span>
-                            );
-                          }
-
-                          return (
-                            <div className="flex flex-col gap-0.5">
-                              {oneShotHt != null && (
-                                <span className="flex items-center gap-2">
-                                  One shot :
-                                  <span className="flex flex-col">
-                                    {fmt(oneShotHt)} {devise} HT
-                                    {oneShotTtc != null && (
-                                      <span className="text-[11px] text-muted-foreground">
-                                        {fmt(oneShotTtc)} {devise} TTC
-                                      </span>
-                                    )}
-                                  </span>
-                                </span>
-                              )}
-                              {mensuelHt != null && (
-                                <span className="flex items-center gap-2">
-                                  Mensuel :
-                                  <span className="flex flex-col">
-                                    {fmt(mensuelHt)} HT
-                                    {mensuelTtc != null && (
-                                      <span className="text-[11px] text-muted-foreground">
-                                        {fmt(mensuelTtc)} TTC
-                                      </span>
-                                    )}
-                                  </span>
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })()
-                      ) : c.montant_ht == null ? (
-                        <span className="text-muted-foreground">—</span>
-                      ) : (
-                        (() => {
-                          const ht = c.montant_ht;
-                          const rate = c.tva_rate ?? null;
-                          const ttc =
-                            ht != null && rate != null
-                              ? ht * (1 + rate / 100)
-                              : null;
-
-                          return (
-                            <div className="flex flex-col">
-                              <span>{fmt(ht)} HT</span>
-                              {ttc != null && (
-                                <span className="text-[11px] text-muted-foreground">
-                                  {fmt(ttc)} TTC
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })()
-                      )}
-                    </TableCell>
-
-                    {/* Reste : HT + TTC */}
-                    <TableCell className="px-3 py-2 align-middle text-xs">
-                      {resteHt == null ? (
-                        <span className="text-muted-foreground">—</span>
-                      ) : (
-                        (() => {
-                          const rate = c.tva_rate ?? null;
-                          const resteTtc =
-                            rate != null ? resteHt * (1 + rate / 100) : null;
-
-                          return (
-                            <div className="flex flex-col">
-                              <span
-                                className={cn(
-                                  "font-semibold",
-                                  resteHt > 0
-                                    ? "text-amber-700"
-                                    : resteHt < 0
-                                    ? "text-emerald-700"
-                                    : "text-slate-700"
-                                )}
-                              >
-                                {fmt(resteHt)} HT
-                              </span>
-                              {resteTtc != null && (
-                                <span className="text-[11px] text-muted-foreground">
-                                  {fmt(resteTtc)} TTC
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })()
-                      )}
-                    </TableCell>
-
-                    {/* Propos */}
-                    <TableCell
-                      className="px-3 py-2 align-middle"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {c.proposition_url_envoi ? (
-                        <Button
-                          asChild
-                          variant="outline"
-                          size="icon"
-                          className="h-8 w-8"
-                        >
-                          <a
-                            href={c.proposition_url_envoi}
-                            target="_blank"
-                            rel="noreferrer"
-                            aria-label="Ouvrir les documents de la proposition"
-                          >
-                            <DownloadIcon className="h-4 w-4" />
-                          </a>
-                        </Button>
-                      ) : (
+                      {c.proposition_services.length === 0 ? (
                         <span className="text-xs text-muted-foreground">—</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {c.proposition_services.map((s) => (
+                            <span
+                              key={s.id}
+                              className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[11px]"
+                            >
+                              {s.label ?? s.id}
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </TableCell>
 
-                    {/* Devis */}
-                    <TableCell
-                      className="px-3 py-2 align-middle"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <ContratDocumentUploader
-                        contratId={c.id}
-                        docType="devis"
-                        existingPath={c.devis_pdf_path}
-                      />
+                    {/* Montant : HT + TTC (total contrat, ultra simple) */}
+                    <TableCell className="px-3 py-2 align-middle text-xs">
+                      {c.montant_ht == null && c.montant_ttc == null ? (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      ) : (
+                        <div className="flex flex-col">
+                          {c.montant_ht != null && (
+                            <span>{fmt(c.montant_ht)} HT</span>
+                          )}
+                          {c.montant_ttc != null && (
+                            <span className="text-[11px] text-muted-foreground">
+                              {fmt(c.montant_ttc)} TTC
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </TableCell>
 
-                    {/* Devis signé */}
+                    {/* Statut (select Shadcn) */}
                     <TableCell
-                      className="px-3 py-2 align-middle"
+                      className="px-3 py-2 align-middle text-xs"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <ContratDocumentUploader
-                        contratId={c.id}
-                        docType="devis_signe"
-                        existingPath={c.devis_signe_pdf_path}
-                      />
+                      <Select
+                        value={c.statut}
+                        onValueChange={(value) =>
+                          handleChangeStatut(c.id, value as StatutContrat)
+                        }
+                        disabled={updatingStatutId === c.id}
+                      >
+                        <SelectTrigger className="h-8 w-[180px] text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="brouillon">
+                            {STATUT_LABEL.brouillon}
+                          </SelectItem>
+                          <SelectItem value="en_attente_signature">
+                            {STATUT_LABEL.en_attente_signature}
+                          </SelectItem>
+                          <SelectItem value="signe">
+                            {STATUT_LABEL.signe}
+                          </SelectItem>
+                          <SelectItem value="en_cours">
+                            {STATUT_LABEL.en_cours}
+                          </SelectItem>
+                          <SelectItem value="termine">
+                            {STATUT_LABEL.termine}
+                          </SelectItem>
+                          <SelectItem value="annule">
+                            {STATUT_LABEL.annule}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
                     </TableCell>
 
-                    {/* Factures */}
+                    {/* Docs : un seul bouton qui ouvre le dialog */}
                     <TableCell
                       className="px-3 py-2 align-middle"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <ContratDocumentUploader
-                        contratId={c.id}
-                        docType="facture"
-                        existingPath={c.facture_pdf_path}
-                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        onClick={() => {
+                          setSelectedContrat(c);
+                          setDocsDialogOpen(true);
+                        }}
+                        title="Gérer les documents"
+                      >
+                        <FileText className="h-4 w-4" />
+                        <span className="sr-only">Gérer les documents</span>
+                      </Button>
                     </TableCell>
 
                     {/* Actions */}
@@ -1155,6 +1624,184 @@ export function ContratsTable({
           </TableBody>
         </Table>
       </div>
+
+      {/* Dialog principal : docs du contrat */}
+      <Dialog
+        open={docsDialogOpen}
+        onOpenChange={(open) => {
+          setDocsDialogOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-medium">
+              Documents du contrat
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              {selectedContrat
+                ? `${selectedContrat.titre || "Sans titre"} – ${
+                    selectedContrat.client_nom_affichage ||
+                    selectedContrat.client_nom_legal ||
+                    "Client inconnu"
+                  }`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+
+          {selectedContrat && (
+            <div className="flex flex-col gap-3 text-xs">
+              {/* Proposition */}
+              <div className="flex items-center justify-between rounded-md border px-3 py-2">
+                <div className="flex flex-col">
+                  <span className="font-medium">Proposition commerciale</span>
+                  <span className="font-mono text-[11px]">
+                    {`propos-${getProjectBaseName(selectedContrat)}`}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {selectedContrat.proposition_url_envoi
+                      ? "Lien disponible"
+                      : "Aucun lien associé"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {selectedContrat.proposition_url_envoi && (
+                    <Button asChild size="sm" variant="outline">
+                      <a
+                        href={selectedContrat.proposition_url_envoi}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Ouvrir
+                      </a>
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* Devis */}
+              {renderDocRow("Devis", "devis")}
+
+              {/* Devis signé */}
+              {renderDocRow("Devis signé", "devis_signe")}
+
+              {/* Factures */}
+              {renderDocRow("Factures", "facture")}
+            </div>
+          )}
+
+          <DialogFooter className="mt-3 flex items-center justify-between gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setDocsDialogOpen(false);
+              }}
+            >
+              Fermer
+            </Button>
+
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleDownloadAllDocsZip}
+              disabled={zipLoading || !selectedContrat}
+            >
+              {zipLoading ? "Préparation du ZIP..." : "Télécharger tout (ZIP)"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog factures multiples */}
+      <Dialog open={facturesDialogOpen} onOpenChange={setFacturesDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-medium">
+              Factures –{" "}
+              {selectedContrat ? getProjectBaseName(selectedContrat) : ""}
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Liste des factures associées à ce contrat.
+            </DialogDescription>
+          </DialogHeader>
+
+          {facturesLoading ? (
+            <p className="py-4 text-center text-xs text-muted-foreground">
+              Chargement des factures...
+            </p>
+          ) : factures.length === 0 ? (
+            <p className="py-4 text-center text-xs text-muted-foreground">
+              Aucune facture à afficher.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {factures.map((f) => (
+                <div
+                  key={f.path}
+                  className="flex items-center justify-between rounded-md border px-3 py-2 text-xs"
+                >
+                  <div className="flex flex-col">
+                    <span className="font-mono text-[11px]">{f.name}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {/* Voir */}
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="outline"
+                      onClick={() => openSignedUrlInNewTab(f.path)}
+                      title="Voir"
+                    >
+                      <Eye className="h-4 w-4" />
+                      <span className="sr-only">Voir</span>
+                    </Button>
+
+                    {/* Télécharger */}
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="outline"
+                      onClick={() => downloadFileFromStorage(f.path, f.name)}
+                      title="Télécharger"
+                    >
+                      <Download className="h-4 w-4" />
+                      <span className="sr-only">Télécharger</span>
+                    </Button>
+
+                    {/* Supprimer une seule facture */}
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      onClick={async () => {
+                        try {
+                          await supabase.storage
+                            .from("documents-contrats")
+                            .remove([f.path]);
+                          toast.success("Facture supprimée");
+                          if (selectedContrat) {
+                            await loadFacturesForContrat(selectedContrat);
+                          }
+                        } catch (err) {
+                          console.error(err);
+                          toast.error(
+                            "Erreur lors de la suppression de la facture"
+                          );
+                        }
+                      }}
+                      title="Supprimer cette facture"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      <span className="sr-only">Supprimer</span>
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Pagination */}
       <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
@@ -1239,5 +1886,45 @@ export function ContratsTable({
         </div>
       </div>
     </div>
+  );
+}
+
+export function ContratRowActions({ contrat }: { contrat: ContratRow }) {
+  const router = useRouter();
+
+  const goToDetails = () => {
+    if (contrat.client_slug && contrat.slug) {
+      router.push(
+        `/dashboard/clients/${contrat.client_slug}/contrats/${contrat.slug}`
+      );
+    } else {
+      toast.error(
+        "Impossible d’ouvrir le détail du contrat (slug client ou contrat manquant)."
+      );
+    }
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <div className="flex justify-end">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="shadow-none"
+            aria-label="Actions sur le contrat"
+          >
+            <EllipsisVerticalIcon size={16} aria-hidden="true" />
+          </Button>
+        </div>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuLabel>Actions</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={goToDetails}>
+          Détails
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

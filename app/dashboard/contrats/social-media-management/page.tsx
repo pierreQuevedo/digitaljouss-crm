@@ -3,8 +3,8 @@ import { ContratsByCategoryPage } from "@/components/contrats-propos/contrats-by
 export default function Page() {
   return (
     <ContratsByCategoryPage
-      categorySlug="conception-web"
-      title="Contrats – Conception web"
+      categorySlug="social-media-management"
+      title="Contrats – Social media management"
     />
   );
 }

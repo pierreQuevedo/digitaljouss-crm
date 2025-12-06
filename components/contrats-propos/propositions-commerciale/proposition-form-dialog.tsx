@@ -58,7 +58,7 @@ type StatutProposition =
   | "acceptee"
   | "refusee";
 
-type BillingModel = "one_shot" | "recurring" | "mixed";
+type BillingModel = "one_shot" | "recurring";
 
 type ClientOption = {
   id: string;
@@ -155,7 +155,6 @@ function getCategoryDotClasses(slug?: string | null) {
 const BILLING_MODEL_LABEL: Record<BillingModel, string> = {
   one_shot: "One shot",
   recurring: "Récurrent",
-  mixed: "Mixte (one shot + récurrent)",
 };
 
 function parseNumber(value: string): number | null {
@@ -320,19 +319,19 @@ export function PropositionFormDialog({
   /* ---------------------- billing models autorisés / défaut -------------------- */
 
   const allowedBillingModels: BillingModel[] = useMemo(() => {
-    if (!selectedCategory) return ["one_shot", "recurring", "mixed"];
+    if (!selectedCategory) return ["one_shot", "recurring"];
 
     const slug = selectedCategory.slug;
 
     if (slug === "social-media-management" || slug === "strategie-digitale") {
-      return ["recurring", "mixed"];
+      return ["recurring"];
     }
 
     if (slug === "direction-artistique" || slug === "conception-web") {
-      return ["one_shot", "mixed"];
+      return ["one_shot"];
     }
 
-    return ["one_shot", "recurring", "mixed"];
+    return ["one_shot", "recurring"];
   }, [selectedCategory]);
 
   // met à jour le modèle par défaut quand la catégorie change
@@ -402,12 +401,6 @@ export function PropositionFormDialog({
     const montant_ht: number | null = (() => {
       if (billingModel === "one_shot") return montant_ht_one_shot;
       if (billingModel === "recurring") return montant_ht_mensuel;
-      if (billingModel === "mixed") {
-        const one = montant_ht_one_shot ?? 0;
-        const mens = montant_ht_mensuel ?? 0;
-        if (!one && !mens) return null;
-        return one + mens;
-      }
       return null;
     })();
 
@@ -449,7 +442,6 @@ export function PropositionFormDialog({
     }
 
     if (
-      billingModel === "mixed" &&
       montant_ht_one_shot == null &&
       montant_ht_mensuel == null
     ) {
@@ -860,60 +852,6 @@ export function PropositionFormDialog({
                   <div className="grid gap-1.5">
                     <Label htmlFor="devise">Devise</Label>
                     <Input id="devise" name="devise" defaultValue="EUR" />
-                  </div>
-                </div>
-              )}
-
-              {billingModel === "mixed" && (
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="col-span-2 space-y-3">
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="montant_one_shot">
-                        Montant HT one shot
-                      </Label>
-                      <Input
-                        id="montant_one_shot"
-                        inputMode="decimal"
-                        placeholder="0,00"
-                        value={montantOneShot}
-                        onChange={(e) => setMontantOneShot(e.target.value)}
-                      />
-                    </div>
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="montant_mensuel">
-                        Montant HT mensuel
-                      </Label>
-                      <Input
-                        id="montant_mensuel"
-                        inputMode="decimal"
-                        placeholder="0,00"
-                        value={montantMensuel}
-                        onChange={(e) => setMontantMensuel(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="devise">Devise</Label>
-                    <Input id="devise" name="devise" defaultValue="EUR" />
-                  </div>
-                </div>
-              )}
-
-              {billingModel === "mixed" && (
-                <div className="grid gap-3">
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="date_prevue_facturation_recurrente">
-                      Début prévu facturation récurrente
-                    </Label>
-                    <Input
-                      id="date_prevue_facturation_recurrente"
-                      name="date_prevue_facturation_recurrente"
-                      type="date"
-                    />
-                    <p className="text-[11px] text-muted-foreground">
-                      Optionnel. Le récurrent ne sera considéré comme “lancé”
-                      qu&apos;à partir de cette date.
-                    </p>
                   </div>
                 </div>
               )}

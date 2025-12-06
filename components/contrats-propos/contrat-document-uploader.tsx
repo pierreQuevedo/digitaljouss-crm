@@ -1,19 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type React from "react";
 import { toast } from "sonner";
-import { Eye, Download, Plus } from "lucide-react";
+import { Loader2, Eye, Trash2 } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { createClient } from "@/lib/supabase/client";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 const supabase = createClient();
 
@@ -23,6 +16,10 @@ type Props = {
   contratId: string;
   docType: DocType;
   existingPath: string | null;
+  /**
+   * zipBaseName est gardé pour compatibilité mais plus utilisé ici.
+   */
+  zipBaseName?: string;
 };
 
 const LABELS: Record<DocType, string> = {
@@ -31,17 +28,196 @@ const LABELS: Record<DocType, string> = {
   facture: "Facture",
 };
 
+type ListedFile = {
+  name: string;
+  path: string;
+};
+
 export function ContratDocumentUploader({
   contratId,
   docType,
   existingPath,
 }: Props) {
   const [isUploading, setIsUploading] = useState(false);
-  const [currentPath, setCurrentPath] = useState<string | null>(existingPath);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
 
   const isFacture = docType === "facture";
+
+  // Chemin actuel pour les singles (devis / devis signé)
+  const [currentSinglePath, setCurrentSinglePath] = useState<string | null>(
+    !isFacture ? existingPath : null
+  );
+
+  // Nom du fichier actuel pour les singles
+  const singleFileName =
+    !isFacture && currentSinglePath
+      ? currentSinglePath.split("/").pop() ?? currentSinglePath
+      : null;
+
+  const hasExisting = !!singleFileName;
+
+  const [listedFactures, setListedFactures] = useState<ListedFile[]>([]);
+  const [facturesLoading, setFacturesLoading] = useState(false);
+
+  /* ---------------------------------------------------------------------- */
+  /*                    Helpers preview / delete génériques                 */
+  /* ---------------------------------------------------------------------- */
+
+  const handlePreview = async (path: string) => {
+    const { data, error } = await supabase.storage
+      .from("documents-contrats")
+      .createSignedUrl(path, 60 * 5);
+
+    if (error || !data?.signedUrl) {
+      console.error(error);
+      toast.error("Impossible d’ouvrir le document");
+      return;
+    }
+
+    window.open(data.signedUrl, "_blank");
+  };
+
+  const handleDeleteSingle = async () => {
+    if (!currentSinglePath) return;
+
+    setIsUploading(true);
+    try {
+      const columnName =
+        docType === "devis" ? "devis_pdf_path" : "devis_signe_pdf_path";
+
+      // Suppr du fichier dans le storage
+      const { error: removeError } = await supabase.storage
+        .from("documents-contrats")
+        .remove([currentSinglePath]);
+
+      if (removeError) {
+        console.error(removeError);
+        toast.error("Erreur lors de la suppression du fichier");
+        return;
+      }
+
+      // Mise à jour du contrat
+      const { error: updateError } = await supabase
+        .from("contrats")
+        .update({ [columnName]: null })
+        .eq("id", contratId);
+
+      if (updateError) {
+        console.error(updateError);
+        toast.error(
+          "Fichier supprimé du stockage, mais erreur lors de la mise à jour du contrat"
+        );
+        return;
+      }
+
+      setCurrentSinglePath(null);
+      toast.success(`${LABELS[docType]} supprimé`);
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur inattendue lors de la suppression");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDeleteFacture = async (path: string) => {
+    setIsUploading(true);
+    try {
+      // Supprimer ce fichier
+      const { error: removeError } = await supabase.storage
+        .from("documents-contrats")
+        .remove([path]);
+
+      if (removeError) {
+        console.error(removeError);
+        toast.error("Erreur lors de la suppression de la facture");
+        return;
+      }
+
+      // Re-lister les factures pour MAJ UI
+      await listFactures();
+
+      // Mettre à jour la colonne facture_pdf_path (dernier fichier ou null)
+      const prefix = `contrats/${contratId}/factures`;
+      const { data: list, error: listError } = await supabase.storage
+        .from("documents-contrats")
+        .list(prefix, { limit: 100 });
+
+      if (listError) {
+        console.error(listError);
+        // On ne bloque pas, la facture est déjà supprimée
+      } else {
+        let newPath: string | null = null;
+        if (list && list.length > 0) {
+          const last = list[list.length - 1];
+          newPath = `${prefix}/${last.name}`;
+        }
+
+        const { error: updateError } = await supabase
+          .from("contrats")
+          .update({ facture_pdf_path: newPath })
+          .eq("id", contratId);
+
+        if (updateError) {
+          console.error(updateError);
+          toast.error(
+            "Facture supprimée, mais erreur lors de la mise à jour du contrat"
+          );
+          return;
+        }
+      }
+
+      toast.success("Facture supprimée");
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur inattendue lors de la suppression");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  /* ---------------------------------------------------------------------- */
+  /*                         Listing des factures                           */
+  /* ---------------------------------------------------------------------- */
+
+  const listFactures = useCallback(async () => {
+    if (!isFacture) return;
+
+    setFacturesLoading(true);
+    try {
+      const prefix = `contrats/${contratId}/factures`;
+
+      const { data, error } = await supabase.storage
+        .from("documents-contrats")
+        .list(prefix, { limit: 100 });
+
+      if (error) {
+        console.error(error);
+        toast.error("Impossible de lister les factures");
+        return;
+      }
+
+      const files: ListedFile[] =
+        data?.map((f) => ({
+          name: f.name,
+          path: `${prefix}/${f.name}`,
+        })) ?? [];
+
+      setListedFactures(files);
+    } finally {
+      setFacturesLoading(false);
+    }
+  }, [contratId, isFacture]);
+
+  useEffect(() => {
+    if (isFacture) {
+      void listFactures();
+    }
+  }, [isFacture, listFactures]);
+
+  /* ---------------------------------------------------------------------- */
+  /*                               Upload                                   */
+  /* ---------------------------------------------------------------------- */
 
   const triggerFileDialog = () => {
     if (fileInputRef.current && !isUploading) {
@@ -52,8 +228,9 @@ export function ContratDocumentUploader({
   const handleFiles = async (files: FileList) => {
     if (!files.length) return;
 
-    // On vérifie les types (PDF only)
     const fileArray = Array.from(files);
+
+    // PDF only
     if (fileArray.some((f) => f.type !== "application/pdf")) {
       toast.error("Seuls les fichiers PDF sont acceptés.");
       return;
@@ -62,15 +239,15 @@ export function ContratDocumentUploader({
     setIsUploading(true);
 
     try {
-      // Pour devis / devis signé : un seul fichier
       if (!isFacture) {
+        // ---------- DEVIS / DEVIS SIGNÉ : 1 seul fichier ----------
         const file = fileArray[0];
 
         const extension = ".pdf";
         const path = `contrats/${contratId}/${docType}${extension}`;
 
         const { error: uploadError } = await supabase.storage
-          .from("contrat-docs")
+          .from("documents-contrats")
           .upload(path, file, {
             upsert: true,
           });
@@ -82,11 +259,7 @@ export function ContratDocumentUploader({
         }
 
         const columnName =
-          docType === "devis"
-            ? "devis_pdf_path"
-            : docType === "devis_signe"
-            ? "devis_signe_pdf_path"
-            : "facture_pdf_path";
+          docType === "devis" ? "devis_pdf_path" : "devis_signe_pdf_path";
 
         const { error: updateError } = await supabase
           .from("contrats")
@@ -96,17 +269,20 @@ export function ContratDocumentUploader({
         if (updateError) {
           console.error(updateError);
           toast.error(
-            "Document uploadé mais erreur lors de la mise à jour du contrat",
+            "Document uploadé mais erreur lors de la mise à jour du contrat"
           );
           return;
         }
 
-        setCurrentPath(path);
-        toast.success(`${LABELS[docType]} mis à jour`);
+        setCurrentSinglePath(path);
+
+        toast.success(
+          hasExisting
+            ? `${LABELS[docType]} mis à jour`
+            : `${LABELS[docType]} ajouté`
+        );
       } else {
-        // Factures : on accepte plusieurs fichiers
-        // NOTE: ici on garde uniquement le dernier dans facture_pdf_path,
-        // les autres restent disponibles dans le bucket.
+        // ---------- FACTURES : multi fichiers ----------
         let lastPath: string | null = null;
 
         for (const [index, file] of fileArray.entries()) {
@@ -114,7 +290,7 @@ export function ContratDocumentUploader({
           const path = `contrats/${contratId}/factures/${Date.now()}_${index}_${safeName}`;
 
           const { error: uploadError } = await supabase.storage
-            .from("contrat-docs")
+            .from("documents-contrats")
             .upload(path, file, {
               upsert: true,
             });
@@ -122,7 +298,7 @@ export function ContratDocumentUploader({
           if (uploadError) {
             console.error(uploadError);
             toast.error(
-              "Erreur lors de l’upload d’une des factures. Les précédentes ont peut-être été importées.",
+              "Erreur lors de l’upload d’une des factures. Les précédentes ont peut-être été importées."
             );
             return;
           }
@@ -139,21 +315,21 @@ export function ContratDocumentUploader({
           if (updateError) {
             console.error(updateError);
             toast.error(
-              "Factures uploadées mais erreur lors de la mise à jour du contrat",
+              "Factures uploadées mais erreur lors de la mise à jour du contrat"
             );
             return;
           }
 
-          setCurrentPath(lastPath);
           toast.success(
             fileArray.length > 1
               ? `${fileArray.length} factures uploadées`
-              : "Facture uploadée",
+              : "Facture uploadée"
           );
+
+          // refresh de la liste en dessous
+          await listFactures();
         }
       }
-
-      setDialogOpen(false);
     } catch (err) {
       console.error(err);
       toast.error("Erreur inattendue lors de l’upload");
@@ -162,9 +338,7 @@ export function ContratDocumentUploader({
     }
   };
 
-  const handleFileChange = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
     await handleFiles(e.target.files);
     e.target.value = "";
@@ -178,42 +352,9 @@ export function ContratDocumentUploader({
     await handleFiles(files);
   };
 
-  const handlePreview = async () => {
-    if (!currentPath) return;
-
-    const { data, error } = await supabase.storage
-      .from("contrat-docs")
-      .createSignedUrl(currentPath, 60 * 5); // 5 minutes
-
-    if (error || !data?.signedUrl) {
-      console.error(error);
-      toast.error("Impossible de générer le lien du document");
-      return;
-    }
-
-    window.open(data.signedUrl, "_blank");
-  };
-
-  const handleDownload = async () => {
-    if (!currentPath) return;
-
-    const { data, error } = await supabase.storage
-      .from("contrat-docs")
-      .createSignedUrl(currentPath, 60 * 5);
-
-    if (error || !data?.signedUrl) {
-      console.error(error);
-      toast.error("Impossible de générer le lien de téléchargement");
-      return;
-    }
-
-    const a = document.createElement("a");
-    a.href = data.signedUrl;
-    a.download = "";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  };
+  /* ---------------------------------------------------------------------- */
+  /*                                Render                                  */
+  /* ---------------------------------------------------------------------- */
 
   return (
     <>
@@ -227,101 +368,121 @@ export function ContratDocumentUploader({
         onChange={handleFileChange}
       />
 
-      <div className="flex items-center gap-1">
-        {currentPath ? (
-          <>
-            {/* Preview */}
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              onClick={handlePreview}
-              title={`Prévisualiser ${LABELS[docType]}`}
-            >
-              <Eye className="h-4 w-4" />
-            </Button>
-
-            {/* Download */}
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              onClick={handleDownload}
-              title={`Télécharger ${LABELS[docType]}`}
-            >
-              <Download className="h-4 w-4" />
-            </Button>
-          </>
-        ) : (
-          <>
-            {/* Bouton + pour ouvrir le dialog d’upload */}
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              onClick={() => setDialogOpen(true)}
-              disabled={isUploading}
-              title={`Ajouter ${LABELS[docType]}`}
-            >
-              <Plus className="h-4 w-4" />
-            </Button>
-          </>
+      {/* Dropzone inline (clic + drag & drop) */}
+      <div
+        className={cn(
+          "flex flex-col items-center justify-center rounded-md border border-dashed border-muted-foreground/40 bg-muted/30 px-4 py-6 text-center text-xs text-muted-foreground",
+          isUploading ? "cursor-not-allowed opacity-70" : "cursor-pointer"
         )}
+        onClick={isUploading ? undefined : triggerFileDialog}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={handleDrop}
+      >
+        <div
+          className={cn(
+            "flex flex-col items-center gap-2",
+            isUploading && "animate-pulse"
+          )}
+        >
+          <p className="font-medium">
+            {isFacture
+              ? listedFactures.length > 0
+                ? "Ajouter de nouvelles factures PDF"
+                : "Ajouter des factures PDF"
+              : hasExisting
+              ? "Remplacer le fichier PDF"
+              : "Importer un fichier PDF"}
+          </p>
+          <p className="mt-1 text-[11px]">
+            Dépose ton fichier PDF ici, ou clique pour le choisir.
+            {isFacture && " Tu peux en sélectionner plusieurs."}
+          </p>
+
+          {isUploading && <Loader2 className="mt-1 h-4 w-4 animate-spin" />}
+        </div>
       </div>
 
-      {/* Dialog avec "dropzone" */}
-      <Dialog
-        open={dialogOpen}
-        onOpenChange={(open) => {
-          if (!isUploading) setDialogOpen(open);
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-medium">
-              Importer {LABELS[docType]}
-            </DialogTitle>
-            <DialogDescription className="text-xs">
-              {isFacture
-                ? "Glisse-dépose une ou plusieurs factures PDF, ou clique pour les choisir."
-                : "Glisse-dépose le PDF, ou clique pour le choisir."}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div
-            className="mt-2 flex cursor-pointer items-center justify-center rounded-md border border-dashed border-muted-foreground/40 bg-muted/30 px-4 py-8 text-center text-xs text-muted-foreground"
-            onClick={triggerFileDialog}
-            onDragOver={(e) => {
-              e.preventDefault();
-            }}
-            onDrop={handleDrop}
-          >
-            <div>
-              <p className="font-medium">
-                {isFacture
-                  ? "Dépose ici tes factures PDF"
-                  : "Dépose ici ton PDF"}
-              </p>
-              <p className="mt-1 text-[11px]">
-                Seuls les fichiers PDF sont acceptés.
-                {isFacture && " Tu peux en sélectionner plusieurs."}
-              </p>
+      {/* Fichier single (devis / devis signé) */}
+      {!isFacture && singleFileName && currentSinglePath && (
+        <div className="mt-3 w-full text-left">
+          <p className="mb-1 text-[11px] font-medium text-muted-foreground">
+            Fichier actuellement importé
+          </p>
+          <div className="flex items-center justify-between rounded border bg-background px-2 py-1 text-[11px]">
+            <span className="mr-2 flex-1 truncate font-mono max-w-[220px]">
+              {singleFileName}
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => handlePreview(currentSinglePath)}
+                className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px]"
+              >
+                <Eye className="h-3 w-3" />
+                <span>Ouvrir</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteSingle}
+                className="inline-flex items-center justify-center rounded border px-1.5 py-0.5 text-[11px]"
+                title="Supprimer"
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
             </div>
           </div>
+        </div>
+      )}
 
-          <DialogFooter className="mt-3 flex justify-end gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => setDialogOpen(false)}
-              disabled={isUploading}
-            >
-              Fermer
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Liste des factures existantes sous la dropzone */}
+      {isFacture && (
+        <div className="mt-3 w-full text-left">
+          <p className="mb-1 text-[11px] font-medium text-muted-foreground">
+            Factures déjà importées
+          </p>
+
+          {facturesLoading ? (
+            <p className="text-[11px] text-muted-foreground">
+              Chargement des factures...
+            </p>
+          ) : listedFactures.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">
+              Aucune facture pour le moment.
+            </p>
+          ) : (
+            <ul className="space-y-1">
+              {listedFactures.map((f) => (
+                <li
+                  key={f.path}
+                  className="flex items-center justify-between rounded border bg-background px-2 py-1 text-[11px]"
+                >
+                  <span className="mr-2 flex-1 truncate font-mono max-w-[220px]">
+                    {f.name}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handlePreview(f.path)}
+                      className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px]"
+                    >
+                      <Eye className="h-3 w-3" />
+                      <span>Ouvrir</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteFacture(f.path)}
+                      className="inline-flex items-center justify-center rounded border px-1.5 py-0.5 text-[11px]"
+                      title="Supprimer"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </>
   );
 }

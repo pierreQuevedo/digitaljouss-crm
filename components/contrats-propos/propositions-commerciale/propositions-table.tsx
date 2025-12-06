@@ -98,7 +98,7 @@ export type StatutProposition =
   | "acceptee"
   | "refusee";
 
-export type BillingModel = "one_shot" | "recurring" | "mixed";
+export type BillingModel = "one_shot" | "recurring";
 
 export type EtatProposition = "active" | "archive";
 export type EtatFilter = "all" | EtatProposition;
@@ -179,7 +179,6 @@ const STATUT_LABEL: Record<StatutProposition, string> = {
 const BILLING_MODEL_LABEL: Record<BillingModel, string> = {
   one_shot: "One shot",
   recurring: "Récurrent",
-  mixed: "Mixte (one shot + récurrent)",
 };
 
 function parseNumber(value: string): number | null {
@@ -828,26 +827,6 @@ export function PropositionsTable({
           );
         }
 
-        // mixed
-        if (
-          billing_model === "mixed" &&
-          (montant_ht_one_shot != null || montant_ht_mensuel != null)
-        ) {
-          const total = (montant_ht_one_shot ?? 0) + (montant_ht_mensuel ?? 0);
-          return (
-            <div className="flex flex-col text-xs">
-              <span>
-                One shot : {fmt(montant_ht_one_shot)} {d}
-              </span>
-              <span>
-                Mensuel : {fmt(montant_ht_mensuel)} {d}
-              </span>
-              <span className="text-[11px] text-muted-foreground">
-                Total estimé : {fmt(total)} {d}
-              </span>
-            </div>
-          );
-        }
 
         if (montant_ht == null) {
           return <span className="text-xs text-muted-foreground">—</span>;
@@ -1426,19 +1405,19 @@ function RowActions({
 
   // modèles autorisés en fonction de la catégorie
   const allowedBillingModels: BillingModel[] = useMemo(() => {
-    if (!selectedCategory) return ["one_shot", "recurring", "mixed"];
+    if (!selectedCategory) return ["one_shot", "recurring"];
 
     const slug = selectedCategory.slug;
 
     if (slug === "social-media-management" || slug === "strategie-digitale") {
-      return ["recurring", "mixed"];
+      return ["recurring"];
     }
 
     if (slug === "direction-artistique" || slug === "conception-web") {
-      return ["one_shot", "mixed"];
+      return ["one_shot"];
     }
 
-    return ["one_shot", "recurring", "mixed"];
+    return ["one_shot", "recurring"];
   }, [selectedCategory]);
 
   // modèle par défaut quand on change de catégorie
@@ -1502,12 +1481,6 @@ function RowActions({
     const montant_ht: number | null = (() => {
       if (billingModel === "one_shot") return montant_ht_one_shot;
       if (billingModel === "recurring") return montant_ht_mensuel;
-      if (billingModel === "mixed") {
-        const one = montant_ht_one_shot ?? 0;
-        const mens = montant_ht_mensuel ?? 0;
-        if (!one && !mens) return null;
-        return one + mens;
-      }
       return null;
     })();
 
@@ -1537,18 +1510,6 @@ function RowActions({
       toast.error("Montant mensuel requis", {
         description:
           "Pour un modèle récurrent, renseigne le montant HT mensuel.",
-      });
-      return;
-    }
-
-    if (
-      billingModel === "mixed" &&
-      montant_ht_one_shot == null &&
-      montant_ht_mensuel == null
-    ) {
-      toast.error("Montants requis", {
-        description:
-          "Pour un modèle mixte, renseigne au moins un montant (one shot ou mensuel).",
       });
       return;
     }
@@ -1906,70 +1867,6 @@ function RowActions({
                         id={`devise_${proposition.id}`}
                         name="devise"
                         defaultValue={proposition.devise ?? "EUR"}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {billingModel === "mixed" && (
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="col-span-2 space-y-3">
-                      <div className="grid gap-1.5">
-                        <Label htmlFor={`montant_one_shot_${proposition.id}`}>
-                          Montant HT one shot
-                        </Label>
-                        <Input
-                          id={`montant_one_shot_${proposition.id}`}
-                          inputMode="decimal"
-                          placeholder="0,00"
-                          value={montantOneShot}
-                          onChange={(e) => setMontantOneShot(e.target.value)}
-                        />
-                      </div>
-                      <div className="grid gap-1.5">
-                        <Label htmlFor={`montant_mensuel_${proposition.id}`}>
-                          Montant HT mensuel
-                        </Label>
-                        <Input
-                          id={`montant_mensuel_${proposition.id}`}
-                          inputMode="decimal"
-                          placeholder="0,00"
-                          value={montantMensuel}
-                          onChange={(e) => setMontantMensuel(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                    <div className="grid gap-1.5">
-                      <Label htmlFor={`devise_${proposition.id}`}>Devise</Label>
-                      <Input
-                        id={`devise_${proposition.id}`}
-                        name="devise"
-                        defaultValue={proposition.devise ?? "EUR"}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {billingModel === "mixed" && (
-                  <div className="grid gap-3">
-                    <div className="grid gap-1.5">
-                      <Label
-                        htmlFor={`date_prevue_facturation_recurrente_${proposition.id}`}
-                      >
-                        Début prévu facturation récurrente
-                      </Label>
-                      <Input
-                        id={`date_prevue_facturation_recurrente_${proposition.id}`}
-                        name="date_prevue_facturation_recurrente"
-                        type="date"
-                        defaultValue={
-                          proposition.date_prevue_facturation_recurrente
-                            ? proposition.date_prevue_facturation_recurrente.slice(
-                                0,
-                                10
-                              )
-                            : ""
-                        }
                       />
                     </div>
                   </div>

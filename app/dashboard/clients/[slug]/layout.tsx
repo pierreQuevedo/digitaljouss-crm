@@ -15,16 +15,14 @@ const supabase = createClient();
 
 type LayoutProps = {
   children: React.ReactNode;
-  // ⬇️ params est maintenant un Promise
   params: Promise<{ slug: string }>;
 };
 
 export default function ClientLayout({ children, params }: LayoutProps) {
-  // ⬇️ on “débloque” params ici
-  const { slug } = use(params);
+  const { slug } = use(params); // ⬅️ on revient sur slug
 
   const router = useRouter();
-  const segment = useSelectedLayoutSegment(); // "contrats" | "propositions" | null
+  const segment = useSelectedLayoutSegment();
   const [client, setClient] = useState<ClientRow | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -33,8 +31,7 @@ export default function ClientLayout({ children, params }: LayoutProps) {
       try {
         const { data, error } = await supabase
           .from("clients")
-          .select(
-            `
+          .select(`
             id,
             nom_legal,
             nom_affichage,
@@ -52,9 +49,8 @@ export default function ClientLayout({ children, params }: LayoutProps) {
             notes_internes,
             logo_url,
             slug
-          `
-          )
-          .eq("slug", slug)
+          `)
+          .eq("slug", slug) // ⬅️ filtre sur slug
           .single();
 
         if (error || !data) {
@@ -97,17 +93,17 @@ export default function ClientLayout({ children, params }: LayoutProps) {
   return (
     <ClientProvider client={client}>
       <div className="p-6 space-y-6">
-        {/* Header client */}
         <div>
           <h1 className="text-2xl font-semibold">
             {client.nom_affichage || client.nom_legal || "Client"}
           </h1>
           {client.slug && (
-            <p className="text-sm text-muted-foreground">Slug : {client.slug}</p>
+            <p className="text-sm text-muted-foreground">
+              Slug : {client.slug}
+            </p>
           )}
         </div>
 
-        {/* Tabs + contenu de page */}
         <Tabs value={currentTab} className="w-full">
           <TabsList>
             <TabsTrigger value="details" asChild>
@@ -125,6 +121,7 @@ export default function ClientLayout({ children, params }: LayoutProps) {
                 Propositions
               </Link>
             </TabsTrigger>
+
             <TabsTrigger value="facturation" asChild>
               <Link href={`/dashboard/clients/${slug}/facturation`}>
                 Facturation
