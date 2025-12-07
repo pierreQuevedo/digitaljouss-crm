@@ -3,13 +3,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { format } from "date-fns";
-import { fr } from "date-fns/locale";
-import { Eye, EllipsisVertical } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectTrigger,
@@ -17,31 +13,11 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
+
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { ContratDocumentUploader } from "@/components/contrats-propos/contrat-document-uploader";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
+  ClientFacturationContratsTable,
+  type ContratFacturationRow,
+} from "@/components/facturation/client-facturation-contrats-table";
 
 const supabase = createClient();
 
@@ -214,6 +190,17 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
   }, [contrats, statutFilter, onlyWithResteDu]);
 
   /* ---------------------------------------------------------------------- */
+  /*                 TRANSFORMATION POUR LE TABLEAU FACTURATION             */
+  /* ---------------------------------------------------------------------- */
+
+  const facturationRows = useMemo<ContratFacturationRow[]>(() => {
+    return filteredContrats.map((contrat) => ({
+      contrat,
+      snapshot: computeContratFacturation(contrat),
+    }));
+  }, [filteredContrats]);
+
+  /* ---------------------------------------------------------------------- */
   /*                         CALCULS DE SYNTHÈSE                            */
   /* ---------------------------------------------------------------------- */
 
@@ -260,7 +247,7 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
       resteHt += snap.resteDuHt;
       resteTtc += snap.resteDuTtc;
 
-      // 🔹 Mensuel du mois en cours
+      // Mensuel du mois en cours
       const currentMensuel = getContratMensuelPourMois(
         contrat,
         currentMonthStart
@@ -268,11 +255,8 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
       recurringMensuelHt += currentMensuel.ht;
       recurringMensuelTtc += currentMensuel.ttc;
 
-      // 🔹 Mensuel du mois prochain (prévisionnel)
-      const nextMensuel = getContratMensuelPourMois(
-        contrat,
-        nextMonthStart
-      );
+      // Mensuel du mois prochain (prévisionnel)
+      const nextMensuel = getContratMensuelPourMois(contrat, nextMonthStart);
       nextMonthMensuelHt += nextMensuel.ht;
       nextMonthMensuelTtc += nextMensuel.ttc;
     }
@@ -355,8 +339,7 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
       </div>
 
       {/* Synthèse */}
-            {/* Synthèse */}
-            <div className="grid gap-4 md:grid-cols-5">
+      <div className="grid gap-4 md:grid-cols-5">
         <SummaryCard
           label="Total contrats signés (engagement)"
           ttc={totalEngagementTtc}
@@ -406,561 +389,14 @@ export function ClientFacturationTab({ clientId }: ClientFacturationTabProps) {
       ) : (
         <div className="space-y-4">
           <h3 className="text-sm font-medium">Contrats & paiements</h3>
-          <div className="overflow-x-auto rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Contrat</TableHead>
-                  <TableHead>Statut</TableHead>
-                  <TableHead className="text-right">
-                    Engagement contrat
-                  </TableHead>
-                  <TableHead className="text-right">Payé</TableHead>
-                  <TableHead className="text-right">Reste dû à date</TableHead>
-                  <TableHead>Devis</TableHead>
-                  <TableHead>Devis signé</TableHead>
-                  <TableHead>Facture</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredContrats.map((contrat) => (
-                  <ContratRowItem
-                    key={contrat.id}
-                    contrat={contrat}
-                    devise={contrat.devise}
-                    onPaymentAdded={fetchContrats}
-                  />
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <ClientFacturationContratsTable
+            contrats={facturationRows}
+            devise={devise}
+            onPaymentAdded={fetchContrats}
+          />
         </div>
       )}
     </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*                          LIGNE DE TABLE PAR CONTRAT                        */
-/* -------------------------------------------------------------------------- */
-
-type ContratRowItemProps = {
-  contrat: ContratRow;
-  devise: string;
-  onPaymentAdded: () => void;
-};
-
-function ContratRowItem({
-  contrat,
-  devise,
-  onPaymentAdded,
-}: ContratRowItemProps) {
-  const [isActionsOpen, setIsActionsOpen] = useState(false);
-  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
-
-  const snapshot = computeContratFacturation(contrat);
-  const {
-    engagementTotalHt,
-    engagementTotalTtc,
-    paidHt,
-    paidTtc,
-    resteDuHt,
-    resteDuTtc,
-  } = snapshot;
-
-  const paiements = contrat.contrat_paiements || [];
-  const tva = getTvaRate(contrat.tva_rate);
-
-  return (
-    <>
-      <TableRow className="align-middle">
-        <TableCell className="space-y-1">
-          <div className="font-medium">{contrat.titre}</div>
-          <div className="text-xs text-muted-foreground">
-            {paiements.length} paiement(s)
-          </div>
-        </TableCell>
-
-        <TableCell className="align-middle">
-          <ContratStatusBadge statut={contrat.statut} />
-        </TableCell>
-
-        {/* Montant contrat = engagement total */}
-        <TableCell className="align-middle text-right">
-          <div>
-            {formatMontant(engagementTotalTtc, devise)}{" "}
-            <span className="text-xs text-muted-foreground">TTC</span>
-          </div>
-          {engagementTotalHt > 0 && (
-            <div className="text-xs text-muted-foreground">
-              {formatMontant(engagementTotalHt, devise)} HT
-            </div>
-          )}
-        </TableCell>
-
-        {/* PAYÉ = snapshot payé TTC + HT + œil à côté */}
-        <TableCell className="align-middle text-right">
-          <div className="flex items-center justify-end gap-2">
-            <div className="text-right">
-              <div>
-                {formatMontant(paidTtc, devise)}{" "}
-                <span className="text-xs text-muted-foreground">TTC</span>
-              </div>
-              {paidHt > 0 && (
-                <div className="text-xs text-muted-foreground">
-                  {formatMontant(paidHt, devise)} HT
-                </div>
-              )}
-            </div>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="h-8 w-8"
-              onClick={() => setIsDetailsOpen(true)}
-              title="Voir le détail des paiements"
-            >
-              <Eye className="h-4 w-4" />
-            </Button>
-          </div>
-        </TableCell>
-
-        {/* Reste dû à date */}
-        <TableCell className="align-middle text-right">
-          <div>
-            {formatMontant(resteDuTtc, devise)}{" "}
-            <span className="text-xs text-muted-foreground">TTC</span>
-          </div>
-          {Math.abs(resteDuHt) > 0.01 && (
-            <div className="text-xs text-muted-foreground">
-              {formatMontant(resteDuHt, devise)} HT
-            </div>
-          )}
-        </TableCell>
-
-        <TableCell className="align-middle">
-          <ContratDocumentUploader
-            contratId={contrat.id}
-            docType="devis"
-            existingPath={contrat.devis_pdf_path}
-          />
-        </TableCell>
-        <TableCell className="align-middle">
-          <ContratDocumentUploader
-            contratId={contrat.id}
-            docType="devis_signe"
-            existingPath={contrat.devis_signe_pdf_path}
-          />
-        </TableCell>
-        <TableCell className="align-middle">
-          <ContratDocumentUploader
-            contratId={contrat.id}
-            docType="facture"
-            existingPath={contrat.facture_pdf_path}
-          />
-        </TableCell>
-
-        {/* Actions : menu 3 points verticaux + dialog "Actions" */}
-        <TableCell className="align-middle text-right">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <div className="flex justify-end">
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="shadow-none h-8 w-8"
-                  aria-label="Actions sur le contrat"
-                >
-                  <EllipsisVertical className="h-4 w-4" aria-hidden="true" />
-                </Button>
-              </div>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>Actions</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => setIsActionsOpen(true)}>
-                Ajouter un paiement
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <AddPaiementDialog
-            open={isActionsOpen}
-            onOpenChange={setIsActionsOpen}
-            contratId={contrat.id}
-            devise={devise}
-            tvaRate={tva}
-            onPaymentAdded={onPaymentAdded}
-          />
-        </TableCell>
-      </TableRow>
-
-      {/* Dialog détails (contrat + paiements) */}
-      <ContratDetailsDialog
-        open={isDetailsOpen}
-        onOpenChange={setIsDetailsOpen}
-        contrat={contrat}
-        devise={devise}
-      />
-    </>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*                        SOUS-TABLE DES PAIEMENTS (DÉTAILS)                  */
-/* -------------------------------------------------------------------------- */
-
-type PaiementsSubTableProps = {
-  paiements: ContratPaiementRow[];
-  devise: string;
-  tvaRate: number;
-};
-
-function PaiementsSubTable({
-  paiements,
-  devise,
-  tvaRate,
-}: PaiementsSubTableProps) {
-  return (
-    <div className="overflow-x-auto">
-      <Table className="text-xs">
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-[120px]">Date paiement</TableHead>
-            <TableHead className="text-right">Montant</TableHead>
-            <TableHead>Mode</TableHead>
-            <TableHead>Note</TableHead>
-            <TableHead>Commentaire</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {paiements.map((p) => {
-            const pTtcRaw =
-              p.montant_ttc != null
-                ? Number(p.montant_ttc)
-                : Number(p.montant_ht || 0);
-            const pHtRaw = p.montant_ht != null ? Number(p.montant_ht) : 0;
-            const montantHt =
-              pHtRaw > 0 ? pHtRaw : pTtcRaw / (1 + tvaRate / 100);
-
-            return (
-              <TableRow key={p.id}>
-                <TableCell>
-                  {format(new Date(p.date_paiement), "dd MMM yyyy", {
-                    locale: fr,
-                  })}
-                </TableCell>
-                <TableCell className="text-right">
-                  <div>
-                    {formatMontant(pTtcRaw, devise)}{" "}
-                    <span className="text-[10px] text-muted-foreground">
-                      TTC
-                    </span>
-                  </div>
-                  {montantHt > 0 && (
-                    <div className="text-[10px] text-muted-foreground">
-                      {formatMontant(montantHt, devise)} HT
-                    </div>
-                  )}
-                </TableCell>
-                <TableCell>{p.mode_paiement ?? "—"}</TableCell>
-                <TableCell>{p.note ?? "—"}</TableCell>
-                <TableCell>{p.commentaire ?? "—"}</TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*                        DIALOG DÉTAILS CONTRAT                              */
-/* -------------------------------------------------------------------------- */
-
-type ContratDetailsDialogProps = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  contrat: ContratRow;
-  devise: string;
-};
-
-function ContratDetailsDialog({
-  open,
-  onOpenChange,
-  contrat,
-  devise,
-}: ContratDetailsDialogProps) {
-  const paiements = contrat.contrat_paiements || [];
-  const tva = getTvaRate(contrat.tva_rate);
-
-  const snapshot = computeContratFacturation(contrat);
-  const {
-    engagementTotalHt,
-    engagementTotalTtc,
-    paidHt,
-    paidTtc,
-    resteDuHt,
-    resteDuTtc,
-    nbMoisTotal,
-    nbMoisEcoules,
-    engagementFuturTtc,
-  } = snapshot;
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Détails du contrat</DialogTitle>
-          <DialogDescription>
-            Synthèse et historique des paiements pour ce contrat.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4 py-2">
-          <div>
-            <p className="text-sm font-medium">{contrat.titre}</p>
-            <p className="text-xs text-muted-foreground flex items-center gap-1">
-              Statut : <ContratStatusBadge statut={contrat.statut} />
-            </p>
-            {contrat.billing_model !== "one_shot" && nbMoisTotal > 0 && (
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                Récurent : {nbMoisEcoules}/{nbMoisTotal} mois “accrus” à date
-              </p>
-            )}
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-3">
-            <SummaryCard
-              label="Engagement contrat"
-              ttc={engagementTotalTtc}
-              ht={engagementTotalHt}
-              devise={devise}
-            />
-            <SummaryCard
-              label="Total payé"
-              ttc={paidTtc}
-              ht={paidHt}
-              devise={devise}
-            />
-            <SummaryCard
-              label="Reste dû à date"
-              ttc={resteDuTtc}
-              ht={resteDuHt}
-              devise={devise}
-              highlight={resteDuTtc > 0}
-            />
-          </div>
-
-          {engagementFuturTtc > 0 && (
-            <p className="text-[11px] text-muted-foreground">
-              Engagement futur (non encore exigible) :{" "}
-              {formatMontant(engagementFuturTtc, devise)} TTC
-            </p>
-          )}
-
-          <div className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Paiements
-            </p>
-            {paiements.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                Aucun paiement enregistré pour ce contrat.
-              </p>
-            ) : (
-              <PaiementsSubTable
-                paiements={paiements}
-                devise={devise}
-                tvaRate={tva}
-              />
-            )}
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*                        DIALOG AJOUT PAIEMENT (ACTIONS)                     */
-/* -------------------------------------------------------------------------- */
-
-type AddPaiementDialogProps = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  contratId: string;
-  devise: string;
-  tvaRate: number;
-  onPaymentAdded: () => void;
-};
-
-function AddPaiementDialog({
-  open,
-  onOpenChange,
-  contratId,
-  devise,
-  tvaRate,
-  onPaymentAdded,
-}: AddPaiementDialogProps) {
-  const [date, setDate] = useState<string>(
-    new Date().toISOString().slice(0, 10)
-  );
-  const [montant, setMontant] = useState<string>("");
-  const [mode, setMode] = useState<string>("");
-  const [note, setNote] = useState<string>("");
-  const [commentaire, setCommentaire] = useState<string>("");
-  const [isSaving, setIsSaving] = useState(false);
-
-  const resetForm = () => {
-    setDate(new Date().toISOString().slice(0, 10));
-    setMontant("");
-    setMode("");
-    setNote("");
-    setCommentaire("");
-  };
-
-  const handleClose = (value: boolean) => {
-    if (!value) {
-      resetForm();
-    }
-    onOpenChange(value);
-  };
-
-  const handleSubmit = async () => {
-    const montantClean = montant.replace(",", ".");
-    const montantTtc = Number(montantClean);
-
-    if (!montant || isNaN(montantTtc) || montantTtc <= 0) {
-      toast.error("Merci de saisir un montant valide.");
-      return;
-    }
-
-    const montantHt = montantTtc / (1 + tvaRate / 100);
-
-    setIsSaving(true);
-
-    try {
-      const { error } = await supabase.from("contrat_paiements").insert({
-        contrat_id: contratId,
-        montant_ttc: montantTtc,
-        montant_ht: montantHt,
-        date_paiement: date || new Date().toISOString().slice(0, 10),
-        mode_paiement: mode || null,
-        note: note || null,
-        commentaire: commentaire || null,
-      });
-
-      if (error) {
-        console.error(error);
-        toast.error("Erreur lors de l’ajout du paiement");
-        return;
-      }
-
-      toast.success("Paiement ajouté");
-      resetForm();
-      onPaymentAdded();
-      onOpenChange(false);
-    } catch (err) {
-      console.error(err);
-      toast.error("Erreur inattendue lors de l’ajout du paiement");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Actions</DialogTitle>
-          <DialogDescription>
-            Ajouter un paiement pour ce contrat.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-3 py-2">
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">
-              Date de paiement
-            </label>
-            <Input
-              type="date"
-              className="h-8"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">
-              Montant (TTC)
-            </label>
-            <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                step="0.01"
-                className="h-8"
-                value={montant}
-                onChange={(e) => setMontant(e.target.value)}
-                placeholder="0,00"
-              />
-              <span className="text-xs text-muted-foreground">{devise}</span>
-            </div>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">
-              Mode de paiement
-            </label>
-            <Input
-              className="h-8"
-              value={mode}
-              onChange={(e) => setMode(e.target.value)}
-              placeholder="Virement, CB, chèque…"
-            />
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">
-              Note interne
-            </label>
-            <Input
-              className="h-8"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="Ex : acompte, facture n°X…"
-            />
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">
-              Commentaire
-            </label>
-            <Input
-              className="h-8"
-              value={commentaire}
-              onChange={(e) => setCommentaire(e.target.value)}
-              placeholder="Champ libre…"
-            />
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button
-            variant="outline"
-            type="button"
-            onClick={() => handleClose(false)}
-          >
-            Annuler
-          </Button>
-          <Button type="button" onClick={handleSubmit} disabled={isSaving}>
-            {isSaving ? "Enregistrement…" : "Ajouter le paiement"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -1079,8 +515,6 @@ function findMensuelHtForMonth(
 
 /**
  * Calcul des métriques de facturation pour un contrat à une date de référence.
- * - gère les périodes tarifaires mensuelles (400€ -> 700€ en cours de route)
- * - gère one_shot / recurrent / mixte
  */
 function computeContratFacturation(
   contrat: ContratRow,
@@ -1230,91 +664,85 @@ function computeContratFacturation(
   };
 }
 
-/* ---------- 🔽 AJOUT ICI : CALCUL DU MONTANT RÉCURRENT POUR UN MOIS ------- */
+/* ---------- CALCUL DU MONTANT RÉCURRENT POUR UN MOIS ---------------------- */
 
 type ContratMonthlyRecurring = {
-    ht: number;
-    ttc: number;
-  };
-  
-  /**
-   * Renvoie le montant récurrent (HT/TTC) du contrat pour un mois donné.
-   * Tient compte des périodes tarifaires, début/fin de contrat, engagement, etc.
-   */
-  function getContratMensuelPourMois(
-    contrat: ContratRow,
-    monthDate: Date
-  ): ContratMonthlyRecurring {
-    const tvaRate = getTvaRate(contrat.tva_rate ?? 20);
-    const tva = tvaRate / 100;
-  
-    const periods = buildTarifPeriods(contrat);
-    const montantHtMensuelFallback = parseNumber(contrat.montant_ht_mensuel);
-  
-    // 🔁 On considère que le contrat est “mensuel” s’il a un montant mensuel
-    // ou des périodes dans contrat_tarifs_mensuels, peu importe les enums
-    const hasMonthlyComponent =
-      periods.length > 0 || montantHtMensuelFallback > 0;
-  
-    if (!hasMonthlyComponent) {
-      return { ht: 0, ttc: 0 };
-    }
-  
-    // Start du contrat : date_debut, sinon date_signature, sinon 1er tarif
-    const firstPeriodStart = periods[0]?.start ?? null;
-    const startRaw = contrat.date_debut ?? contrat.date_signature ?? null;
-    const contractStart = safeDate(startRaw) ?? firstPeriodStart;
-    if (!contractStart) {
-      return { ht: 0, ttc: 0 };
-    }
-  
-    const monthStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
-    const contractStartMonth = new Date(
-      contractStart.getFullYear(),
-      contractStart.getMonth(),
-      1
-    );
-  
-    // Si on est avant le début du contrat
-    if (monthStart < contractStartMonth) {
-      return { ht: 0, ttc: 0 };
-    }
-  
-    // Fin du contrat si engagement limité ou date_fin_prevue
-    let contractEndMonth: Date | null = null;
-  
-    if (contrat.nb_mois_engagement && contrat.nb_mois_engagement > 0) {
-      contractEndMonth = addMonths(
-        contractStartMonth,
-        contrat.nb_mois_engagement - 1
-      );
-    } else if (contrat.date_fin_prevue) {
-      const dEnd = safeDate(contrat.date_fin_prevue);
-      if (dEnd) {
-        contractEndMonth = new Date(dEnd.getFullYear(), dEnd.getMonth(), 1);
-      }
-    }
-  
-    // Si on est après la fin du contrat
-    if (contractEndMonth && monthStart > contractEndMonth) {
-      return { ht: 0, ttc: 0 };
-    }
-  
-    const mensuelHt = findMensuelHtForMonth(
-      monthStart,
-      periods,
-      montantHtMensuelFallback
-    );
-  
-    if (mensuelHt <= 0) {
-      return { ht: 0, ttc: 0 };
-    }
-  
-    return {
-      ht: mensuelHt,
-      ttc: mensuelHt * (1 + tva),
-    };
+  ht: number;
+  ttc: number;
+};
+
+/**
+ * Renvoie le montant récurrent (HT/TTC) du contrat pour un mois donné.
+ */
+function getContratMensuelPourMois(
+  contrat: ContratRow,
+  monthDate: Date
+): ContratMonthlyRecurring {
+  const tvaRate = getTvaRate(contrat.tva_rate ?? 20);
+  const tva = tvaRate / 100;
+
+  const periods = buildTarifPeriods(contrat);
+  const montantHtMensuelFallback = parseNumber(contrat.montant_ht_mensuel);
+
+  const hasMonthlyComponent =
+    periods.length > 0 || montantHtMensuelFallback > 0;
+
+  if (!hasMonthlyComponent) {
+    return { ht: 0, ttc: 0 };
   }
+
+  // Start du contrat : date_debut, sinon date_signature, sinon 1er tarif
+  const firstPeriodStart = periods[0]?.start ?? null;
+  const startRaw = contrat.date_debut ?? contrat.date_signature ?? null;
+  const contractStart = safeDate(startRaw) ?? firstPeriodStart;
+  if (!contractStart) {
+    return { ht: 0, ttc: 0 };
+  }
+
+  const monthStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+  const contractStartMonth = new Date(
+    contractStart.getFullYear(),
+    contractStart.getMonth(),
+    1
+  );
+
+  if (monthStart < contractStartMonth) {
+    return { ht: 0, ttc: 0 };
+  }
+
+  let contractEndMonth: Date | null = null;
+
+  if (contrat.nb_mois_engagement && contrat.nb_mois_engagement > 0) {
+    contractEndMonth = addMonths(
+      contractStartMonth,
+      contrat.nb_mois_engagement - 1
+    );
+  } else if (contrat.date_fin_prevue) {
+    const dEnd = safeDate(contrat.date_fin_prevue);
+    if (dEnd) {
+      contractEndMonth = new Date(dEnd.getFullYear(), dEnd.getMonth(), 1);
+    }
+  }
+
+  if (contractEndMonth && monthStart > contractEndMonth) {
+    return { ht: 0, ttc: 0 };
+  }
+
+  const mensuelHt = findMensuelHtForMonth(
+    monthStart,
+    periods,
+    montantHtMensuelFallback
+  );
+
+  if (mensuelHt <= 0) {
+    return { ht: 0, ttc: 0 };
+  }
+
+  return {
+    ht: mensuelHt,
+    ttc: mensuelHt * (1 + tva),
+  };
+}
 
 /* -------------------------------------------------------------------------- */
 /*                          COMPOSANTS UTILITAIRES                            */
@@ -1359,23 +787,4 @@ function formatMontant(montant: number, devise: string) {
   });
 
   return formatter.format(montant || 0);
-}
-
-type ContratStatusBadgeProps = {
-  statut: string;
-};
-
-function ContratStatusBadge({ statut }: ContratStatusBadgeProps) {
-  const label = statut;
-  const baseClass =
-    "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium";
-
-  const variantClass =
-    statut === "signe"
-      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200"
-      : statut === "brouillon"
-      ? "bg-muted text-muted-foreground"
-      : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200";
-
-  return <span className={`${baseClass} ${variantClass}`}>{label}</span>;
 }

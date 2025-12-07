@@ -67,6 +67,21 @@ type CommandContrat = {
 };
 
 /* -------------------------------------------------------------------------- */
+/*                                Helpers                                     */
+/* -------------------------------------------------------------------------- */
+
+function dedupeById<T extends { id: string }>(rows: T[]): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    result.push(row);
+  }
+  return result;
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                Composant                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -122,21 +137,34 @@ export function GlobalCommandPalette() {
 
     const fetchResults = async () => {
       try {
-        // --- Clients ---
-        const { data: clientsData, error: clientsError } = await supabase
-          .from("clients")
-          .select("id, slug, nom_affichage, nom_legal")
-          .or(
-            `nom_affichage.ilike.%${term}%,nom_legal.ilike.%${term}%`
-          )
-          .limit(8);
+        const likeTerm = `%${term}%`;
 
-        if (clientsError) {
-          console.error(clientsError);
+        /* ------------------------------- CLIENTS ------------------------------ */
+        const [
+          { data: clientsByNomAff, error: errAff },
+          { data: clientsByNomLegal, error: errLegal },
+        ] = await Promise.all([
+          supabase
+            .from("clients")
+            .select("id, slug, nom_affichage, nom_legal")
+            .ilike("nom_affichage", likeTerm)
+            .limit(8),
+          supabase
+            .from("clients")
+            .select("id, slug, nom_affichage, nom_legal")
+            .ilike("nom_legal", likeTerm)
+            .limit(8),
+        ]);
+
+        if (errAff || errLegal) {
+          console.error(errAff || errLegal);
           toast.error("Erreur lors de la recherche clients");
         }
 
-        const clientRows = (clientsData ?? []) as DbClientRow[];
+        const clientRows = dedupeById<DbClientRow>([
+          ...(clientsByNomAff ?? []),
+          ...(clientsByNomLegal ?? []),
+        ]);
 
         const mappedClients: CommandClient[] = clientRows.map(
           (c: DbClientRow): CommandClient => ({
@@ -147,33 +175,79 @@ export function GlobalCommandPalette() {
           })
         );
 
-        // --- Contrats ---
-        const { data: contratsData, error: contratsError } = await supabase
-          .from("contrats_with_paiements")
-          .select(
-            `
-            id,
-            slug,
-            titre,
-            client:client_id (
+        /* ------------------------------ CONTRATS ------------------------------ */
+        const [
+          { data: contratsByTitre, error: errTitre },
+          { data: contratsAll, error: errAll },
+        ] = await Promise.all([
+          // filtrage par titre (SQL)
+          supabase
+            .from("contrats_with_paiements")
+            .select(
+              `
+              id,
               slug,
-              nom_affichage,
-              nom_legal
+              titre,
+              client:client_id (
+                slug,
+                nom_affichage,
+                nom_legal
+              )
+            `
             )
-          `
-          )
-          .or(`titre.ilike.%${term}%`)
-          .limit(8);
+            .ilike("titre", likeTerm)
+            .limit(30),
+          // récupération large pour filtrage sur nom client côté front
+          supabase
+            .from("contrats_with_paiements")
+            .select(
+              `
+              id,
+              slug,
+              titre,
+              client:client_id (
+                slug,
+                nom_affichage,
+                nom_legal
+              )
+            `
+            )
+            .order("created_at", { ascending: false })
+            .limit(60),
+        ]);
 
-        if (contratsError) {
-          console.error(contratsError);
+        if (errTitre || errAll) {
+          console.error(errTitre || errAll);
           toast.error("Erreur lors de la recherche contrats");
         }
 
-        const contratRows = (contratsData ?? []) as DbContratRow[];
+        const rawContrats: DbContratRow[] = dedupeById<DbContratRow>([
+          ...(contratsByTitre ?? []),
+          ...(contratsAll ?? []),
+        ]);
 
-        const mappedContrats: CommandContrat[] = contratRows.map(
-          (c: DbContratRow): CommandContrat => {
+        const lowerTerm = term.toLowerCase();
+        const filteredContrats = rawContrats.filter((c) => {
+          const clientJoined: DbContratClientJoined | null = Array.isArray(
+            c.client
+          )
+            ? c.client[0] ?? null
+            : c.client;
+
+          const haystack = [
+            c.titre ?? "",
+            clientJoined?.nom_affichage ?? "",
+            clientJoined?.nom_legal ?? "",
+          ]
+            .join(" ")
+            .toLowerCase();
+
+          return haystack.includes(lowerTerm);
+        });
+
+        const mappedContrats: CommandContrat[] = filteredContrats
+          .slice(0, 12)
+          .map((c: DbContratRow): CommandContrat => {
             const clientJoined: DbContratClientJoined | null = Array.isArray(
               c.client
             )
@@ -188,8 +262,7 @@ export function GlobalCommandPalette() {
               client_nom_affichage: clientJoined?.nom_affichage ?? null,
               client_nom_legal: clientJoined?.nom_legal ?? null,
             };
-          }
-        );
+          });
 
         if (cancelled) return;
 
@@ -224,9 +297,7 @@ export function GlobalCommandPalette() {
 
   return (
     <>
-      {/* ------------------------------------------------------------------ */}
-      {/*  Petit widget de recherche pour la nav (comme sur la doc shadcn)   */}
-      {/* ------------------------------------------------------------------ */}
+      {/* Widget de recherche dans la nav */}
       <button
         type="button"
         onClick={() => setOpen(true)}
@@ -241,17 +312,11 @@ export function GlobalCommandPalette() {
         </span>
       </button>
 
-      {/* Si tu veux qu’il apparaisse aussi sur mobile, enlève `hidden md:flex` */}
-      {/* ou remplace par `flex` directement. */}
-
-      {/* ------------------------------------------------------------------ */}
-      {/*                      Command Palette (dialog)                       */}
-      {/* ------------------------------------------------------------------ */}
       <CommandDialog open={open} onOpenChange={setOpen}>
         <CommandInput
           placeholder="Rechercher… (clients, contrats, navigation)"
-          value={search}
           onValueChange={setSearch}
+          className="!h-8 px-3"
         />
         <CommandList>
           {loading && (
@@ -269,40 +334,50 @@ export function GlobalCommandPalette() {
 
           {/* NAVIGATION */}
           <CommandGroup heading="Navigation">
-            <CommandItem onSelect={() => goTo("/dashboard")}>
+            <CommandItem value="dashboard" onSelect={() => goTo("/dashboard")}>
               <LayoutDashboard className="mr-2 h-4 w-4" />
               <span>Dashboard</span>
             </CommandItem>
 
-            <CommandItem onSelect={() => goTo("/dashboard/clients")}>
+            <CommandItem
+              value="clients"
+              onSelect={() => goTo("/dashboard/clients")}
+            >
               <Users className="mr-2 h-4 w-4" />
               <span>Clients</span>
             </CommandItem>
 
-            <CommandItem onSelect={() => goTo("/dashboard/contrats")}>
+            <CommandItem
+              value="contrats"
+              onSelect={() => goTo("/dashboard/contrats")}
+            >
               <FileText className="mr-2 h-4 w-4" />
               <span>Contrats</span>
             </CommandItem>
 
             <CommandItem
+              value="contrats conception web"
               onSelect={() => goTo("/dashboard/contrats/conception-web")}
             >
               <FileSignature className="mr-2 h-4 w-4" />
               <span>Contrats – Conception web</span>
             </CommandItem>
             <CommandItem
+              value="contrats direction artistique"
               onSelect={() => goTo("/dashboard/contrats/direction-artistique")}
             >
               <FileSignature className="mr-2 h-4 w-4" />
               <span>Contrats – Direction artistique</span>
             </CommandItem>
             <CommandItem
+              value="contrats strategie digitale"
               onSelect={() => goTo("/dashboard/contrats/strategie-digitale")}
             >
               <FileSignature className="mr-2 h-4 w-4" />
               <span>Contrats – Stratégie digitale</span>
             </CommandItem>
             <CommandItem
+              value="contrats social media management"
               onSelect={() =>
                 goTo("/dashboard/contrats/social-media-management")
               }
@@ -320,6 +395,7 @@ export function GlobalCommandPalette() {
               {clients.map((client) => (
                 <CommandItem
                   key={client.id}
+                  value={labelClient(client).toLowerCase()}
                   onSelect={() => {
                     if (!client.slug) {
                       toast.error(
@@ -346,9 +422,14 @@ export function GlobalCommandPalette() {
                   contrat.client_nom_legal ||
                   "Client inconnu";
 
+                const itemValue = `${labelContrat(
+                  contrat
+                )} ${clientLabel}`.toLowerCase();
+
                 return (
                   <CommandItem
                     key={contrat.id}
+                    value={itemValue}
                     onSelect={() => {
                       if (!contrat.client_slug || !contrat.slug) {
                         toast.error(
