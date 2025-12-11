@@ -2,6 +2,7 @@
 "use client";
 
 import { AgencyServicesSettings } from "@/components/reglages-agence/agency-services-settings";
+import { AgenceRelanceSettingsCard } from "@/components/reglages-agence/agence-relance-settings-card";
 import {
   Tabs,
   TabsList,
@@ -22,6 +23,7 @@ export default function AgencySettingsPage() {
       <Tabs defaultValue="services" className="flex-1 flex flex-col">
         <TabsList className="mb-4 w-full justify-start">
           <TabsTrigger value="services">Services</TabsTrigger>
+          <TabsTrigger value="relances">Relances</TabsTrigger>
           <TabsTrigger value="propositions">Propositions & contrats</TabsTrigger>
           <TabsTrigger value="autres">Autres réglages</TabsTrigger>
         </TabsList>
@@ -30,6 +32,13 @@ export default function AgencySettingsPage() {
         <TabsContent value="services" className="flex-1">
           <div className="rounded-xl border bg-card p-4">
             <AgencyServicesSettings />
+          </div>
+        </TabsContent>
+        
+        {/* Onglet Relances */}
+        <TabsContent value="relances" className="flex-1">
+          <div className="rounded-xl border bg-card p-4">
+            <AgenceRelanceSettingsCard />
           </div>
         </TabsContent>
 

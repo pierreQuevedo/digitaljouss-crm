@@ -8,6 +8,7 @@ import {
   Calendar,
   Settings,
   MessageCircle,
+  BellRing
 } from "lucide-react";
 
 export type NavItem = {
@@ -66,6 +67,11 @@ export const sitemap: { main: NavItem[]; secondary: NavItem[] } = {
       label: "Facturation",
       href: "/dashboard/facturation",
       icon: Receipt,
+    },
+    {
+      label: "Relance",
+      href: "/dashboard/relance",
+      icon: BellRing,
     },
 
   ],

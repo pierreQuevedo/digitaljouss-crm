@@ -7,7 +7,6 @@ import { toast } from "sonner";
 
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-// import { cn } from "@/lib/utils";
 import type { BillingModel, StatutContrat } from "@/lib/contrats-domain";
 
 const supabase = createClient();
@@ -89,8 +88,9 @@ export default function ContratDetailPage() {
     const fetchContrat = async () => {
       setLoading(true);
       try {
+        // 1) On récupère le contrat depuis la TABLE `contrats`
         const { data, error } = await supabase
-          .from("contrats_with_paiements")
+          .from("contrats")
           .select(
             `
             id,
@@ -117,10 +117,6 @@ export default function ContratDetailPage() {
             devis_pdf_path,
             devis_signe_pdf_path,
             facture_pdf_path,
-            total_paye_ht,
-            total_paye_ttc,
-            reste_a_payer_ht,
-            reste_a_payer_ttc,
 
             client:client_id (
               slug,
@@ -142,7 +138,7 @@ export default function ContratDetailPage() {
           .maybeSingle();
 
         if (error) {
-          console.error(error);
+          console.error("Erreur SELECT contrats:", error);
           toast.error("Erreur lors du chargement du contrat");
           return;
         }
@@ -173,6 +169,27 @@ export default function ContratDetailPage() {
           const n = Number(v);
           return Number.isFinite(n) ? n : null;
         };
+
+        // 2) On récupère les totaux depuis la VUE `contrats_with_paiements`
+        const { data: paiementAggs, error: paiementError } = await supabase
+          .from("contrats_with_paiements")
+          .select(
+            `
+              total_paye_ht,
+              total_paye_ttc,
+              reste_a_payer_ht,
+              reste_a_payer_ttc
+            `
+          )
+          .eq("id", data.id)
+          .maybeSingle();
+
+        if (paiementError) {
+          console.error(
+            "Erreur SELECT contrats_with_paiements:",
+            paiementError
+          );
+        }
 
         const mapped: ContratDetail = {
           id: data.id,
@@ -212,10 +229,18 @@ export default function ContratDetailPage() {
           date_debut_facturation_recurrente:
             data.date_debut_facturation_recurrente,
 
-          total_paye_ht: toNumber(data.total_paye_ht),
-          total_paye_ttc: toNumber(data.total_paye_ttc),
-          reste_a_payer_ht: toNumber(data.reste_a_payer_ht),
-          reste_a_payer_ttc: toNumber(data.reste_a_payer_ttc),
+          total_paye_ht: paiementAggs
+            ? toNumber(paiementAggs.total_paye_ht)
+            : null,
+          total_paye_ttc: paiementAggs
+            ? toNumber(paiementAggs.total_paye_ttc)
+            : null,
+          reste_a_payer_ht: paiementAggs
+            ? toNumber(paiementAggs.reste_a_payer_ht)
+            : null,
+          reste_a_payer_ttc: paiementAggs
+            ? toNumber(paiementAggs.reste_a_payer_ttc)
+            : null,
 
           devis_pdf_path: data.devis_pdf_path,
           devis_signe_pdf_path: data.devis_signe_pdf_path,

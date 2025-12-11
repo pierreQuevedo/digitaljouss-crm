@@ -966,63 +966,59 @@ export function ContratsTable({
 
       try {
         let query = supabase
-          .from("contrats_with_paiements")
+          .from("contrats") // 👈 on revient sur la table de base
           .select(
             `
-            id,
-            slug,
-            proposition_id,
-            client_id,
-            titre,
-            description,
-            statut,
-            montant_ht,
-            montant_ht_one_shot,
-            montant_ht_mensuel,
-            tva_rate,
-            montant_ttc,
-            billing_model,
-            billing_period,
-            date_debut,
-            date_fin_prevue,
-            nb_mois_engagement,
-            reference_externe,
-            created_at,
-            date_signature,
-            date_facturation_one_shot,
-            date_debut_facturation_recurrente,
+    id,
+    slug,
+    proposition_id,
+    client_id,
+    titre,
+    description,
+    statut,
+    montant_ht,
+    montant_ht_one_shot,
+    montant_ht_mensuel,
+    tva_rate,
+    montant_ttc,
+    billing_model,
+    billing_period,
+    date_debut,
+    date_fin_prevue,
+    nb_mois_engagement,
+    reference_externe,
+    created_at,
+    date_signature,
+    date_facturation_one_shot,
+    date_debut_facturation_recurrente,
 
-            devis_pdf_path,
-            devis_signe_pdf_path,
-            facture_pdf_path,
-            total_paye_ht,
-            total_paye_ttc,
-            reste_a_payer_ht,
-            reste_a_payer_ttc,
+    devis_pdf_path,
+    devis_signe_pdf_path,
+    facture_pdf_path,
 
-            client:client_id (
-              slug,
-              nom_affichage,
-              nom_legal
-            ),
+    client:client_id (
+      slug,
+      nom_affichage,
+      nom_legal
+    ),
 
-            proposition:proposition_id (
-              titre,
-              url_envoi,
-              service_category:service_category_id (
-                id,
-                slug,
-                label
-              ),
-              proposition_services (
-                service_id,
-                service:service_id (
-                  id,
-                  label
-                )
-              )
-            )
-          `
+    proposition:proposition_id (
+      titre,
+      url_envoi,
+      service_category:service_category_id (
+        id,
+        slug,
+        label
+      ),
+      proposition_services (
+        service_id,
+        service:service_id (
+          id,
+          label
+        )
+      )
+    )
+  `
           )
           .order("created_at", { ascending: false });
 
@@ -1921,9 +1917,7 @@ export function ContratRowActions({ contrat }: { contrat: ContratRow }) {
       <DropdownMenuContent align="end">
         <DropdownMenuLabel>Actions</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={goToDetails}>
-          Détails
-        </DropdownMenuItem>
+        <DropdownMenuItem onClick={goToDetails}>Détails</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
